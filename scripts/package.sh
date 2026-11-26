@@ -28,7 +28,7 @@ chroot "$build_dir/build" /bin/sh -ec '
     flags=$(pkg-config --cflags wpe-webkit-2.0 wpe-platform-2.0 libevdev glib-2.0)
     libs=$(pkg-config --libs-only-l wpe-webkit-2.0 wpe-platform-2.0 libevdev glib-2.0)
     cc -Wall -Wextra -Werror -std=gnu17 -O2 $flags -c src/platform.c -o platform.o
-    set -- $libs
+    set -- $libs -lm
     rustc --edition=2024 -C opt-level=2 -C strip=symbols -C link-arg=platform.o \
         $(printf "%s\n" "$@" | sed "s/^/-C link-arg=/") src/main.rs -o gizlet-browser
 '
