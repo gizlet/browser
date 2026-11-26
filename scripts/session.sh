@@ -48,5 +48,6 @@ umount --internal-only --no-canonicalize --lazy .
 exec env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
     HOME=/run/browser XDG_RUNTIME_DIR=/run/browser LANG=C.UTF-8 \
     GIZLET_SWAP_AB="${GIZLET_SWAP_AB:-0}" \
+    GIZLET_LANG="${GIZLET_LANG:-en}" \
     setpriv --reuid=65534 --regid=65534 --groups="$groups" --no-new-privs \
     /usr/bin/gizlet-browser "$@"
