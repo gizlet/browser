@@ -23,7 +23,7 @@ Copy the package to the device, then install it with `gizlet install /tmp/io.giz
 
 The package carries its own read-only runtime with WPE, EGL/GBM and fonts. The entry mounts that runtime in a private mount namespace and starts the browser with an unprivileged UID. WebKit uses an ephemeral network session and Debian's bubblewrap sandbox. The address screen is bundled locally, and the shell denies permission requests. The first release has one tab, with media and WebRTC disabled.
 
-The application code is in `src/`, the address screen is in `ui/`, and the ARM64 packaging and launch scripts are in `scripts/`. The headless test runs the bundled address screen in WebKit. The R36S display, handoff to Launcher and physical controls need device validation.
+The application code is in `src/`, the address screen is in `ui/`, and the ARM64 packaging and launch scripts are in `scripts/`. The headless test opens the address screen in WebKit and navigates between two local HTTP origins. The R36S display, handoff to Launcher and physical controls need device validation.
 
 ## Redistribution
 

@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <glib-unix.h>
 #include <libevdev/libevdev.h>
+#include <libsoup/soup.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -20,6 +21,8 @@ typedef struct {
     WPEView *view;
     const char *page;
     GPtrArray *pads;
+    guint smoke_port;
+    guint smoke_stage;
     gboolean smoke;
     gboolean swap;
     int status;
@@ -69,13 +72,17 @@ static gboolean decide_policy(WebKitWebView *view, WebKitPolicyDecision *decisio
         }
         return FALSE;
     }
-    if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
-        webkit_policy_decision_ignore(decision);
-        return TRUE;
-    }
     WebKitNavigationAction *action = webkit_navigation_policy_decision_get_navigation_action(
         WEBKIT_NAVIGATION_POLICY_DECISION(decision));
     const char *uri = webkit_uri_request_get_uri(webkit_navigation_action_get_request(action));
+    gboolean web_uri = g_str_has_prefix(uri, "https://") || g_str_has_prefix(uri, "http://");
+    if (type == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) {
+        g_autofree char *destination = web_uri && webkit_navigation_action_is_user_gesture(action) ? g_strdup(uri) : NULL;
+        webkit_policy_decision_ignore(decision);
+        if (destination)
+            webkit_web_view_load_uri(view, destination);
+        return TRUE;
+    }
     if (g_str_has_prefix(uri, "gizlet://open/?address=") && on_start(browser)) {
         const char *encoded = uri + strlen("gizlet://open/?address=");
         g_autofree char *decoded = g_uri_unescape_string(encoded, NULL);
@@ -87,7 +94,7 @@ static gboolean decide_policy(WebKitWebView *view, WebKitPolicyDecision *decisio
             webkit_web_view_evaluate_javascript(view, "showAddressError()", -1, NULL, NULL, NULL, NULL, NULL);
         return TRUE;
     }
-    if (g_strcmp0(uri, START) == 0 || g_str_has_prefix(uri, "https://") || g_str_has_prefix(uri, "http://"))
+    if (g_strcmp0(uri, START) == 0 || web_uri)
         return FALSE;
     webkit_policy_decision_ignore(decision);
     return TRUE;
@@ -139,25 +146,66 @@ static void smoke_result(GObject *source, GAsyncResult *result, gpointer data)
     Browser *browser = data;
     g_autoptr(GError) error = NULL;
     g_autoptr(JSCValue) value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source), result, &error);
-    if (value && jsc_value_to_boolean(value)) {
-        browser->status = 0;
-        g_print("WPE rendered and ran the Gizlet address screen\n");
-    } else {
-        g_printerr("WPE address screen failed: %s\n", error ? error->message : "missing controls");
+    if (!value || !jsc_value_to_boolean(value) || !browser->view) {
+        g_printerr("WebKit smoke test failed at step %u: %s\n", browser->smoke_stage,
+            error ? error->message : webkit_web_view_get_uri(browser->web));
+        g_main_loop_quit(browser->loop);
+        return;
     }
+    if (browser->smoke_stage == 0) {
+        browser->smoke_stage++;
+        g_autofree char *script = g_strdup_printf(
+            "document.getElementById('address').value = 'http://127.0.0.1:%u/first';"
+            "document.getElementById('address-form').requestSubmit();", browser->smoke_port);
+        webkit_web_view_evaluate_javascript(browser->web, script, -1, NULL, NULL, NULL, NULL, NULL);
+        return;
+    }
+    if (browser->smoke_stage == 1) {
+        browser->smoke_stage++;
+        g_autofree char *uri = g_strdup_printf("http://localhost:%u/second", browser->smoke_port);
+        webkit_web_view_load_uri(browser->web, uri);
+        return;
+    }
+    browser->status = 0;
+    g_print("WebKit loaded the address screen and navigated across two HTTP origins\n");
     g_main_loop_quit(browser->loop);
 }
 
 static void smoke_loaded(WebKitWebView *view, WebKitLoadEvent event, Browser *browser)
 {
-    if (event == WEBKIT_LOAD_FINISHED)
-        webkit_web_view_evaluate_javascript(view,
-            "document.title === 'Gizlet Browser' && document.querySelectorAll('#keys button').length > 30",
-            -1, NULL, NULL, NULL, smoke_result, browser);
+    if (event != WEBKIT_LOAD_FINISHED)
+        return;
+    const char *check;
+    switch (browser->smoke_stage) {
+    case 0:
+        check = "document.title === 'Gizlet Browser' && document.querySelectorAll('#keys button').length > 30";
+        break;
+    case 1:
+        check = "location.hostname === '127.0.0.1' && location.pathname === '/first' && document.title === 'Browser smoke test'";
+        break;
+    default:
+        check = "location.hostname === 'localhost' && location.pathname === '/second' && document.title === 'Browser smoke test'";
+        break;
+    }
+    webkit_web_view_evaluate_javascript(view, check, -1, NULL, NULL, NULL, smoke_result, browser);
+}
+
+static void smoke_response(SoupServer *server, SoupServerMessage *message, const char *path,
+                          GHashTable *query, gpointer data)
+{
+    (void)server;
+    (void)path;
+    (void)query;
+    (void)data;
+    static const char page[] = "<meta charset=utf-8><title>Browser smoke test</title><p>OK</p>";
+    soup_server_message_set_status(message, SOUP_STATUS_OK, NULL);
+    soup_server_message_set_response(message, "text/html", SOUP_MEMORY_STATIC, page, sizeof(page) - 1);
 }
 
 static void key(Browser *browser, guint symbol, guint scan, WPEModifiers modifiers)
 {
+    if (!browser->view)
+        return;
     guint32 tick = (guint32)(g_get_monotonic_time() / 1000);
     WPEEvent *press = wpe_event_keyboard_new(WPE_EVENT_KEYBOARD_KEY_DOWN, browser->view,
         WPE_INPUT_SOURCE_KEYBOARD, tick, modifiers, scan + 8, symbol);
@@ -219,6 +267,28 @@ static gboolean keyboard_shortcut(WPEView *view, WPEEvent *event, Browser *brows
     else
         return FALSE;
     return TRUE;
+}
+
+static void sync_view(Browser *browser)
+{
+    WPEView *view = webkit_web_view_get_wpe_view(browser->web);
+    if (view == browser->view)
+        return;
+    if (browser->view)
+        g_signal_handlers_disconnect_by_data(browser->view, browser);
+    g_set_object(&browser->view, view);
+    if (view) {
+        g_signal_connect(view, "event", G_CALLBACK(keyboard_shortcut), browser);
+        wpe_view_set_visible(view, TRUE);
+        wpe_view_focus_in(view);
+    }
+}
+
+static void sync_view_on_load(WebKitWebView *view, WebKitLoadEvent event, Browser *browser)
+{
+    (void)view;
+    (void)event;
+    sync_view(browser);
 }
 
 static void close_pad(gpointer data)
@@ -295,11 +365,22 @@ int browser_run(const char *page, const char *address, int smoke)
     g_autoptr(WebKitWebView) web = g_object_new(WEBKIT_TYPE_WEB_VIEW,
         "display", display, "web-context", context, "network-session", session, NULL);
     g_autoptr(GPtrArray) pads = g_ptr_array_new_with_free_func(close_pad);
-    Browser browser = { .loop = loop, .web = web, .view = webkit_web_view_get_wpe_view(web),
+    g_autoptr(SoupServer) server = NULL;
+    Browser browser = { .loop = loop, .web = web,
         .page = page, .pads = pads, .smoke = smoke, .status = smoke,
         .swap = g_strcmp0(g_getenv("GIZLET_SWAP_AB"), "1") == 0 };
-    if (!browser.view)
-        return 1;
+    if (smoke) {
+        server = soup_server_new(NULL, NULL);
+        g_autoptr(GError) error = NULL;
+        if (!soup_server_listen_local(server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error)) {
+            g_printerr("Cannot start the local smoke test server: %s\n", error->message);
+            return 1;
+        }
+        GSList *uris = soup_server_get_uris(server);
+        browser.smoke_port = g_uri_get_port(uris->data);
+        g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+        soup_server_add_handler(server, NULL, smoke_response, NULL, NULL);
+    }
     webkit_web_context_register_uri_scheme(context, "gizlet", serve_start, &browser, NULL);
     WebKitSettings *settings = webkit_web_view_get_settings(web);
     webkit_settings_set_enable_media(settings, FALSE);
@@ -310,9 +391,8 @@ int browser_run(const char *page, const char *address, int smoke)
     g_signal_connect(web, "permission-request", G_CALLBACK(deny_permission), &browser);
     g_signal_connect(web, "load-failed", G_CALLBACK(load_failed), &browser);
     g_signal_connect(web, "web-process-terminated", G_CALLBACK(web_process_failed), &browser);
-    g_signal_connect(browser.view, "event", G_CALLBACK(keyboard_shortcut), &browser);
-    wpe_view_set_visible(browser.view, TRUE);
-    wpe_view_focus_in(browser.view);
+    g_signal_connect(web, "load-changed", G_CALLBACK(sync_view_on_load), &browser);
+    sync_view(&browser);
     guint sources[3] = { g_unix_signal_add(SIGTERM, quit_loop, loop), g_unix_signal_add(SIGINT, quit_loop, loop), 0 };
     if (smoke) {
         g_signal_connect(web, "load-changed", G_CALLBACK(smoke_loaded), &browser);
@@ -329,6 +409,8 @@ int browser_run(const char *page, const char *address, int smoke)
         if (sources[index])
             g_source_remove(sources[index]);
     g_signal_handlers_disconnect_by_data(web, &browser);
-    g_signal_handlers_disconnect_by_data(browser.view, &browser);
+    if (browser.view)
+        g_signal_handlers_disconnect_by_data(browser.view, &browser);
+    g_clear_object(&browser.view);
     return browser.status;
 }
