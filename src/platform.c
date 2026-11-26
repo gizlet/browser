@@ -308,6 +308,16 @@ static void scroll(Browser *browser, double dx, double dy, gboolean stop)
         -dx / TOUCHPAD_SCALE, -dy / TOUCHPAD_SCALE, TRUE, stop, x, y));
 }
 
+static void set_zoom(Browser *browser, double level)
+{
+    webkit_web_view_set_zoom_level(browser->web, level);
+    g_autofree char *value = g_strdup_printf("%.3f", level);
+    for (char *at = value; *at; ++at)
+        if (*at == ',')
+            *at = '.';
+    overlay_call(browser, "setZoom(%s)", value);
+}
+
 static void zoom(Browser *browser, int step)
 {
     static const double levels[] = { 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0 };
@@ -320,7 +330,7 @@ static void zoom(Browser *browser, int step)
         index = (guint)CLAMP((int)index + step, 0, (int)G_N_ELEMENTS(levels) - 1);
     else
         index = 4;
-    webkit_web_view_set_zoom_level(browser->web, levels[index]);
+    set_zoom(browser, levels[index]);
     overlay_call(browser, "toast('%d%%')", (int)lround(levels[index] * 100));
 }
 
@@ -665,6 +675,7 @@ static void load_changed(WebKitWebView *view, WebKitLoadEvent event, Browser *br
         browser->frame_text = FALSE;
         stop_repeat(browser);
     } else if (event == WEBKIT_LOAD_FINISHED) {
+        set_zoom(browser, webkit_web_view_get_zoom_level(browser->web));
         overlay_call(browser, "sync()");
     }
 }
@@ -685,7 +696,8 @@ static const char *const smoke_checks[] = {
     "location.protocol === 'gizlet:' && gizlet.isOpen()",
     "location.hostname === 'localhost' && location.pathname === '/second'",
     "location.protocol === 'gizlet:' && gizlet.isOpen()",
-    "/ $/.test(document.getElementById('address').value)",
+    "/ $/.test(document.getElementById('address').value) && (globalThis.unzoomed = gizlet.panelHeight()) > 100",
+    "gizlet.isOpen() && Math.abs(gizlet.panelHeight() * 2 - unzoomed) < 3",
 };
 
 static const char *const smoke_names[] = {
@@ -694,6 +706,7 @@ static const char *const smoke_names[] = {
     "clicking a cross-origin frame field opens the keyboard", "keyboard types into the frame", "Select closes the keyboard",
     "X opens the address screen", "second origin from the address screen", "B returns to the address screen",
     "keyboard still owns the buttons after returning",
+    "keyboard keeps its size at 200% zoom",
 };
 
 static gboolean smoke_navigates(guint step)
@@ -742,6 +755,7 @@ static void smoke_act(Browser *browser)
         break;
     case 14: press(browser, BUTTON_B); break;
     case 15: press(browser, BUTTON_Y); break;
+    case 16: set_zoom(browser, 2.0); break;
     }
     if (!smoke_navigates(browser->smoke_step))
         browser->smoke_timer = g_timeout_add(600, smoke_delay, browser);
