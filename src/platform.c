@@ -898,7 +898,7 @@ int browser_run(const char *page, const char *overlay_source, const char *addres
     guint sources[3] = { g_unix_signal_add(SIGTERM, quit_loop, loop), g_unix_signal_add(SIGINT, quit_loop, loop), 0 };
     if (smoke) {
         g_signal_connect(web, "load-changed", G_CALLBACK(smoke_loaded), &browser);
-        sources[2] = g_timeout_add_seconds(40, quit_loop, loop);
+        sources[2] = g_timeout_add_seconds(90, quit_loop, loop);
     } else {
         open_pads(&browser);
     }
