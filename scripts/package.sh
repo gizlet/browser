@@ -31,6 +31,7 @@ chroot "$build_dir/build" /bin/sh -ec '
     set -- $libs -lm
     rustc --edition=2024 -C opt-level=2 -C strip=symbols -C link-arg=platform.o \
         $(printf "%s\n" "$@" | sed "s/^/-C link-arg=/") src/main.rs -o gizlet-browser
+    cc -Wall -Wextra -Werror -std=c17 -O2 -static -s src/launch.c -o launch
 '
 
 runtime="$build_dir/runtime"
@@ -48,9 +49,10 @@ test -x "$runtime/usr/lib/aarch64-linux-gnu/wpe-webkit-2.0/WPEWebProcess" ||
 
 app="$build_dir/app"
 mkdir -p "$app/bin" "$project/dist"
+install -m 0755 "$build_dir/build/project/launch" "$app/bin/launch"
 install -m 0755 "$project/scripts/start.sh" "$app/bin/start"
 install -m 0755 "$project/scripts/session.sh" "$app/bin/session"
 python3 "$project/scripts/manifest.py" "$project/gizlet.toml" "$app/manifest.json"
 mksquashfs "$runtime" "$app/runtime.sqfs" -comp zstd -noappend -no-progress
-"$app/bin/start" --smoke
-python3 "$project/scripts/pack.py" "$app" "$project/dist/io.gizlet.browser-0.1.0-arm64.gzl"
+"$app/bin/launch" --smoke
+python3 "$project/scripts/pack.py" "$app" "$project/dist"

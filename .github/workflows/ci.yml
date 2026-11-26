@@ -5,6 +5,7 @@ on:
     types: [created]
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -57,6 +58,14 @@ jobs:
         with:
           ref: ${{ needs.start.outputs.head_sha || github.sha }}
           persist-credentials: false
+      - name: Verify release tag
+        if: github.ref_type == 'tag' && needs.start.result == 'skipped'
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("gizlet.toml", "rb"))["version"])')
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Release tag $GITHUB_REF_NAME must match gizlet.toml (v$version)."
+            exit 1
+          fi
       - name: Install packaging tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap mmdebstrap squashfs-tools debian-archive-keyring
       - name: Build, smoke test, and package
@@ -70,6 +79,19 @@ jobs:
           name: gizlet-browser-arm64
           path: dist/*.gzl
           if-no-files-found: error
+          overwrite: true
+
+  release:
+    needs: arm64
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.pull_request_number == ''))
+    concurrency:
+      group: store-release-${{ github.ref }}
+    permissions:
+      contents: write
+      id-token: write
+    uses: gizlet/.github/.github/workflows/store-release.yml@latest
+    with:
+      artifact-name: gizlet-browser-arm64
 
   finish:
     needs: [start, arm64]
