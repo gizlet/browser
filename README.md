@@ -39,10 +39,11 @@ The application code is in `src/`, the address screen is in `ui/`, and the ARM64
 
 ## Release
 
-Set `version` in `gizlet.toml` and push the matching `v<version>` tag. CI builds
-and smoke-tests the ARM64 package, publishes it to the GitHub Release, and
-waits for the Gizlet Store checks. Select the tag when dispatching CI to
-retry the release.
+Change `version` in `gizlet.toml` and merge to `main`. After the ARM64 build
+and smoke test pass, CI creates `v<version>`, publishes the GitHub Release,
+and waits for the Gizlet Store checks. Rerun the original CI run to retry a
+failed release. Pushing a matching tag or selecting it when dispatching CI
+also starts a release.
 
 ## Redistribution
 
