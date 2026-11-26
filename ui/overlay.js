@@ -2,10 +2,10 @@
   if (globalThis.gizlet) return;
   const zh = globalThis.GIZLET_LANG === "zh-CN";
   const text = zh
-    ? { shift: "大写", symbols: "符号", letters: "字母", space: "空格", del: "删除", go: "前往",
+    ? { shift: "大写", symbols: "符号", letters: "字母", space: "空格", del: "删除", go: "前往", loading: "加载中…",
         hints: [["A", "输入"], ["B", "删除"], ["Y", "空格"], ["X", "符号"], ["L/R", "光标"], ["Start", "确定"], ["Select", "关闭"]],
         empty: "请输入网址或搜索词", invalid: "这个网址无法打开" }
-    : { shift: "Shift", symbols: "#+=", letters: "abc", space: "Space", del: "Delete", go: "Go",
+    : { shift: "Shift", symbols: "#+=", letters: "abc", space: "Space", del: "Delete", go: "Go", loading: "Loading…",
         hints: [["A", "Type"], ["B", "Delete"], ["Y", "Space"], ["X", "Symbols"], ["L/R", "Caret"], ["Start", "Go"], ["Select", "Close"]],
         empty: "Enter an address or search", invalid: "That address can't be opened" };
   const post = message => {
@@ -14,7 +14,6 @@
   const nonText = new Set(["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "image", "hidden"]);
   const editable = element => !!element && (element.isContentEditable || element.tagName === "TEXTAREA"
     || (element.tagName === "INPUT" && !nonText.has(element.type) && !element.readOnly && !element.disabled));
-  let lastPointer = 0;
   const deepActive = () => {
     let element = document.activeElement;
     while (element && element.shadowRoot && element.shadowRoot.activeElement) element = element.shadowRoot.activeElement;
@@ -23,11 +22,9 @@
   const eventTarget = event => (event.composedPath && event.composedPath()[0]) || event.target;
 
   if (window.top !== window) {
-    addEventListener("mousedown", () => { lastPointer = Date.now(); }, true);
-    addEventListener("focusin", event => {
-      post("subfocus:" + (editable(eventTarget(event)) ? (Date.now() - lastPointer < 600 ? "text-click" : "text") : "none"));
+    addEventListener("click", event => {
+      if (event.isTrusted && editable(eventTarget(event))) post("frame:text-click");
     }, true);
-    addEventListener("focusout", () => post("subfocus:none"), true);
     return;
   }
 
@@ -37,9 +34,12 @@
   :host { all: initial; }
   * { box-sizing: border-box; }
   .layer { position: fixed; inset: 0; pointer-events: none; font: 15px/1.2 system-ui, "Noto Sans CJK SC", sans-serif; color: #faf7ff; }
-  .progress { position: absolute; left: 0; top: 0; height: 3px; width: 0; background: #c9affc; box-shadow: 0 1px 3px rgba(0,0,0,.5); transition: width .2s ease-out, opacity .4s ease-out; }
-  .ring { position: absolute; border: 3px solid #f9e28b; border-radius: 6px; box-shadow: 0 0 0 2px rgba(20,14,32,.75), 0 2px 8px rgba(0,0,0,.35); transition: transform .12s cubic-bezier(.2,.8,.2,1), width .12s cubic-bezier(.2,.8,.2,1), height .12s cubic-bezier(.2,.8,.2,1); will-change: transform; }
-  .cursor { position: absolute; left: 0; top: 0; width: 22px; height: 22px; will-change: transform; transition: opacity .3s ease-out; }
+  .loading { position: absolute; inset: 0 0 auto; }
+  .progress { height: calc(5px * var(--ui-scale, 1)); background: #3c3052; }
+  .progress-fill { height: 100%; background: #c9affc; transform: scaleX(.08); transform-origin: left; transition: transform .16s ease-out; }
+  .loading-label { position: absolute; top: calc(13px * var(--ui-scale, 1)); left: 50%; transform: translateX(-50%) scale(var(--ui-scale, 1)); transform-origin: top; padding: 5px 10px; border-radius: 6px; background: #1d1729; color: #faf7ff; font-size: 14px; white-space: nowrap; box-shadow: 0 2px 8px rgba(20,14,32,.4); }
+  @media (prefers-reduced-motion: reduce) { .progress-fill { transition: none; } }
+  .cursor { position: absolute; left: 0; top: 0; width: 24px; height: 24px; will-change: transform; }
   .toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); padding: 7px 14px; border-radius: 16px; background: rgba(24,18,38,.92); box-shadow: 0 3px 10px rgba(0,0,0,.4); font-size: 15px; transition: opacity .25s ease-out; }
   .kb { position: absolute; left: 0; width: 100%; bottom: 0; transform-origin: 0 100%; padding: 7px 8px 6px; background: #1d1729; box-shadow: 0 -4px 16px rgba(0,0,0,.45); border-top: 1px solid #3c3052; }
   .preview { height: 30px; margin: 0 0 6px; padding: 5px 10px; border-radius: 7px; background: #110d19; border: 1px solid #5a4870; font-size: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
@@ -75,13 +75,20 @@
   const layer = document.createElement("div");
   layer.className = "layer";
   layer.innerHTML = `
-    <div class="progress"></div>
-    <div class="ring" hidden></div>
-    <svg class="cursor" hidden viewBox="0 0 22 22" aria-hidden="true"><path d="M3 2 L3 18 L7.3 14 L10.2 20.4 L13 19.1 L10.2 12.9 L16 12.9 Z" fill="#fff" stroke="#1c1129" stroke-width="1.6" stroke-linejoin="round"/></svg>
+    <div class="loading" hidden>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="progress-fill"></div></div>
+      <div class="loading-label" aria-hidden="true"></div>
+    </div>
+    <svg class="cursor" hidden viewBox="0 0 22 22" aria-hidden="true"><path d="M2 2 V18 L6.6 14.1 L9.6 20.5 L13 19 L10.1 12.8 H16.5 Z" fill="#fff" stroke="#1c1129" stroke-width="1.8" stroke-linejoin="round"/></svg>
     <div class="toast" hidden></div>
     <section class="kb" hidden><div class="preview"></div><div class="keys"></div><div class="hints"></div></section>`;
   root.append(layer);
-  const [progressBar, ring, cursor, toastBox, panel] = ["progress", "ring", "cursor", "toast", "kb"].map(name => layer.querySelector("." + name));
+  const [progressBar, cursor, toastBox, panel] = ["progress", "cursor", "toast", "kb"].map(name => layer.querySelector("." + name));
+  const loading = layer.querySelector(".loading");
+  const progressFill = progressBar.firstElementChild;
+  const loadingLabel = layer.querySelector(".loading-label");
+  loadingLabel.textContent = text.loading;
+  progressBar.setAttribute("aria-label", text.loading);
   const preview = panel.querySelector(".preview");
   const keysBox = panel.querySelector(".keys");
   panel.querySelector(".hints").innerHTML = text.hints.map(([button, label]) => `<span><b>${button}</b>${label}</span>`).join("");
@@ -96,13 +103,6 @@
     if (host.isConnected) observer.disconnect();
   }).observe(document, { childList: true });
 
-  const focusKind = element => {
-    if (!element || element === document.body || element === document.documentElement) return "none";
-    if (editable(element)) return "text";
-    if (element.tagName === "IFRAME" || element.tagName === "FRAME") return "frame";
-    if (element.tagName === "INPUT" && (element.type === "checkbox" || element.type === "radio")) return "toggle";
-    return "other";
-  };
   const target = () => {
     if (start) return document.getElementById("address");
     const element = deepActive();
@@ -121,14 +121,32 @@
   let open = false;
   let remote = false;
   let zoom = 1;
+  let pointer = null;
+
+  function updatePointer() {
+    const hidden = start || open || !pointer;
+    cursor.toggleAttribute("hidden", hidden);
+    if (hidden) return;
+    const viewport = window.visualViewport;
+    const left = viewport.offsetLeft + pointer[0] * viewport.width;
+    const top = viewport.offsetTop + pointer[1] * viewport.height;
+    const size = 24 / (zoom * viewport.scale);
+    cursor.style.width = cursor.style.height = `${size}px`;
+    cursor.style.transform = `translate(${left - size / 11}px, ${top - size / 11}px)`;
+  }
+
+  function setPointer(x, y) {
+    pointer = [x, y];
+    updatePointer();
+  }
 
   function setZoom(level) {
     zoom = level > 0 ? level : 1;
+    layer.style.setProperty("--ui-scale", 1 / zoom);
     panel.style.width = zoom * 100 + "%";
     panel.style.transform = zoom === 1 ? "" : `scale(${1 / zoom})`;
     toastBox.style.transform = `translateX(-50%) scale(${1 / zoom})`;
-    cursor.style.width = cursor.style.height = 22 / zoom + "px";
-    scheduleRing();
+    updatePointer();
   }
 
   function layout() {
@@ -305,7 +323,7 @@
     }
     open = true;
     panel.hidden = false;
-    ring.hidden = true;
+    updatePointer();
     layout();
     update();
     if (element && !start) reveal(element);
@@ -321,6 +339,7 @@
     open = false;
     remote = false;
     panel.hidden = true;
+    updatePointer();
     post("keyboard:0");
   }
 
@@ -355,92 +374,54 @@
   }
 
   let progressTimer = 0;
-  function progress(fraction) {
+  function progress(percent) {
     attach();
     clearTimeout(progressTimer);
-    progressBar.style.opacity = "1";
-    progressBar.style.width = Math.round(Math.max(0.05, fraction) * 100) + "%";
-    if (fraction >= 1) progressTimer = setTimeout(() => { progressBar.style.opacity = "0"; }, 250);
+    loading.hidden = percent < 0;
+    if (loading.hidden) return;
+    loadingLabel.hidden = percent === 100;
+    progressBar.setAttribute("aria-valuenow", percent);
+    progressFill.style.transform = `scaleX(${Math.max(.08, percent / 100)})`;
+    if (percent === 100) progressTimer = setTimeout(() => { loading.hidden = true; }, 350);
   }
-
-  let lastKey = 0;
-  let cursorTimer = 0;
-  let ringFrame = 0;
-  function placeRing() {
-    ringFrame = 0;
-    const element = deepActive();
-    if (open || !element || element === document.body || element === document.documentElement || !cursor.hidden) {
-      ring.hidden = true;
-      return;
-    }
-    const rect = element.getBoundingClientRect();
-    if (!rect.width && !rect.height) {
-      ring.hidden = true;
-      return;
-    }
-    ring.hidden = false;
-    ring.style.width = rect.width + 8 + "px";
-    ring.style.height = rect.height + 8 + "px";
-    ring.style.transform = `translate(${rect.left - 4}px, ${rect.top - 4}px)`;
-  }
-  const scheduleRing = () => {
-    if (!ringFrame && !ring.hidden) ringFrame = requestAnimationFrame(placeRing);
-  };
 
   addEventListener("keydown", event => {
     if (!event.isTrusted) return;
-    lastKey = Date.now();
-    if (!cursor.hidden) cursor.hidden = true;
     if (start && event.key === "Enter" && event.target && event.target.id === "address") {
       event.preventDefault();
       go();
     }
   }, true);
-  addEventListener("mousedown", () => {
-    lastPointer = Date.now();
-    ring.hidden = true;
-  }, true);
-  addEventListener("mousemove", event => {
-    if (!event.isTrusted) return;
-    cursor.hidden = false;
-    cursor.style.opacity = "1";
-    cursor.style.transform = `translate(${event.clientX - 3}px, ${event.clientY - 2}px)`;
-    ring.hidden = true;
-    clearTimeout(cursorTimer);
-    cursorTimer = setTimeout(() => { cursor.style.opacity = "0"; cursorTimer = setTimeout(() => { cursor.hidden = true; }, 300); }, 4000);
-  }, true);
-  addEventListener("focusin", event => {
-    const element = eventTarget(event);
-    const isEditable = editable(element);
-    post("focus:" + focusKind(element));
-    if (!start && isEditable && Date.now() - lastPointer < 600) {
+  addEventListener("click", event => {
+    if (event.isTrusted && !start && editable(eventTarget(event)) && editable(deepActive())) {
       openKeyboard();
-      return;
-    }
-    if (Date.now() - lastKey < 1500 && cursor.hidden) {
-      ring.hidden = false;
-      placeRing();
     }
   }, true);
   addEventListener("focusout", () => {
-    post("focus:none");
     setTimeout(() => {
       if (!editable(deepActive()) && open && !start && !remote) close();
-      placeRing();
     }, 0);
   }, true);
   addEventListener("input", update, true);
   const sync = () => {
     post("keyboard:" + (open ? 1 : 0));
-    post("focus:" + focusKind(deepActive()));
+    if (!start) post("pointer:ready");
   };
-  addEventListener("pageshow", event => { if (event.persisted) sync(); });
-  addEventListener("scroll", scheduleRing, { capture: true, passive: true });
-  addEventListener("resize", scheduleRing, { passive: true });
+  addEventListener("pageshow", event => {
+    if (event.persisted) {
+      sync();
+      post("progress:ready");
+    }
+  });
+  window.visualViewport.addEventListener("scroll", updatePointer, { passive: true });
+  window.visualViewport.addEventListener("resize", updatePointer, { passive: true });
 
   const ready = () => {
     attach();
-    if (!start) return;
+    if (!start) {
+      post("pointer:ready");
+      return;
+    }
     document.documentElement.dataset.lang = zh ? "zh" : "en";
     const element = target();
     if (!element) return;
@@ -453,7 +434,12 @@
 
   Object.defineProperty(globalThis, "gizlet", {
     value: Object.freeze({
-      button, openKeyboard, progress, toast, sync, setZoom,
+      button, openKeyboard, progress, toast, sync, setZoom, setPointer,
+      loadingProgress: () => progressBar.getBoundingClientRect().height ? Number(progressBar.getAttribute("aria-valuenow")) : -1,
+      pointerPosition: () => {
+        const rect = cursor.getBoundingClientRect();
+        return rect.width ? [rect.left + rect.width / 11, rect.top + rect.height / 11] : null;
+      },
       panelHeight: () => panel.getBoundingClientRect().height,
       say: key => toast(text[key] || key),
       type: value => insert(value),
@@ -461,4 +447,5 @@
       keyCount: () => rows.flat().length
     })
   });
+  post("progress:ready");
 })();

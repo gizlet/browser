@@ -4,12 +4,14 @@ A single-page browser for Gizlet handhelds. It uses WPE WebKit for web content a
 
 ## Controls
 
-Pages are navigated by focus, like a TV browser: the D-pad moves between links and fields with WebKit's spatial navigation, and a ring marks the focused element. The left stick shows a pointer for anything focus cannot reach, and A clicks where it points until the D-pad is used again.
+The pointer stays visible while browsing. Move it with the left stick or nudge it with the D-pad, then press A to click. Clicking a text field opens the keyboard. The right stick scrolls in all four directions and accelerates as you hold it.
+
+The top progress bar shows when a page loads. It briefly stays visible after fast page changes, including when you go back.
 
 | Button | On a website | With the keyboard open |
 | --- | --- | --- |
-| D-pad | Move between links and fields (held: repeat) | Move between keys |
-| A | Open the focused link, or type into the focused field; click at the pointer | Press the key |
+| D-pad | Nudge the pointer (hold to repeat) | Move between keys |
+| A | Click at the pointer | Press the key |
 | B | Back | Delete |
 | X | Address screen | Symbols |
 | Y | Reload | Space |
@@ -31,7 +33,9 @@ Copy the package to the device, then install it with `gizlet install /tmp/io.giz
 
 The package carries its own read-only runtime with WPE, EGL/GBM and fonts. The entry mounts that runtime in a private mount namespace and starts the browser with an unprivileged UID. WebKit uses an ephemeral network session and Debian's bubblewrap sandbox. The address screen is bundled locally, and the shell denies permission requests. The first release has one tab, with media and WebRTC disabled.
 
-The application code is in `src/`, the address screen is in `ui/`, and the ARM64 packaging and launch scripts are in `scripts/`. The overlay in `ui/overlay.js` runs in an isolated script world, so pages cannot call it or forge its messages; it draws the keyboard, focus ring, pointer and load progress. Pages paint on the CPU (`WEBKIT_SKIA_ENABLE_CPU_RENDERING`), which held frame times steadier than Panfrost on the R36S, and web processes are capped at 420 MB. The headless test types an address on the keyboard, moves focus with the D-pad, follows a link, scrolls with the stick path, types into a page field and loads a second origin. The R36S display, handoff to Launcher and physical controls need device validation.
+Browser sends an iPhone Safari user agent so sites can serve their mobile layout.
+
+The application code is in `src/`, the address screen is in `ui/`, and the ARM64 packaging and launch scripts are in `scripts/`. The overlay in `ui/overlay.js` runs in an isolated script world and draws the keyboard, pointer and load progress. Pages paint on the CPU (`WEBKIT_SKIA_ENABLE_CPU_RENDERING`), which held frame times steadier than Panfrost on the R36S, and web processes are capped at 420 MB. The headless test checks pointer movement and clicks, right-stick scrolling in four directions, typing into page and frame fields, and navigation across origins. The R36S display, handoff to Launcher and physical controls need device validation.
 
 ## Redistribution
 

@@ -17,14 +17,18 @@
 #define START "gizlet://start/"
 #define WORLD "gizlet"
 #define SEARCH "https://www.bing.com/search?q="
+#define MOBILE_USER_AGENT "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) " \
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
 #define TICK_MS 16
 #define SMOKE_RETRY_MS 250
 #define SMOKE_TRIES 16
 #define REPEAT_DELAY_MS 300
 #define REPEAT_MS 65
-#define POINTER_IDLE_US (5 * G_USEC_PER_SEC)
+#define DPAD_POINTER_STEP 8
+#define SCROLL_RAMP_SECONDS 0.35
 #define TOUCHPAD_SCALE 2.5
 #define MEMORY_LIMIT_MB 420
+#define LOAD_PROGRESS_HOLD_US (400 * G_TIME_SPAN_MILLISECOND)
 
 enum Button {
     BUTTON_NONE, BUTTON_UP, BUTTON_DOWN, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_A, BUTTON_B, BUTTON_X,
@@ -34,8 +38,6 @@ enum Button {
 static const char *const button_names[] = {
     NULL, "up", "down", "left", "right", "a", "b", "x", "y", "l1", "r1", "l2", "r2", "select", "start"
 };
-
-enum Focus { FOCUS_NONE, FOCUS_TEXT, FOCUS_TOGGLE, FOCUS_FRAME, FOCUS_OTHER };
 
 extern int browser_button(uint16_t code, bool swap);
 
@@ -57,14 +59,13 @@ struct Browser {
     double stick[4];
     double pointer_x;
     double pointer_y;
-    gint64 pointer_seen;
-    gboolean scrolling;
+    gint64 scroll_started_at;
+    gboolean loading;
+    gint64 load_finished_at;
     guint tick;
     guint repeat;
     uint16_t repeat_code;
     enum Button repeat_button;
-    enum Focus focus;
-    gboolean frame_text;
     gboolean keyboard;
     gboolean swap;
     gboolean chinese;
@@ -73,6 +74,8 @@ struct Browser {
     guint smoke_step;
     guint smoke_tries;
     guint smoke_timer;
+    guint smoke_response_timer;
+    SoupServerMessage *smoke_delayed_response;
     int status;
 };
 
@@ -132,6 +135,16 @@ static void overlay_call(Browser *browser, const char *format, ...)
     va_end(arguments);
     g_autofree char *script = g_strconcat("globalThis.gizlet && gizlet.", call, NULL);
     overlay(browser, script);
+}
+
+static void sync_load_progress(Browser *browser)
+{
+    int percent = -1;
+    if (browser->loading)
+        percent = CLAMP((int)(100 * webkit_web_view_get_estimated_load_progress(browser->web)), 0, 99);
+    else if (browser->load_finished_at && g_get_monotonic_time() - browser->load_finished_at < LOAD_PROGRESS_HOLD_US)
+        percent = 100;
+    overlay_call(browser, "progress(%d)", percent);
 }
 
 static void serve_start(WebKitURISchemeRequest *request, gpointer data)
@@ -199,6 +212,9 @@ static gboolean load_failed(WebKitWebView *view, WebKitLoadEvent event, const ch
 {
     (void)view;
     (void)event;
+    browser->loading = FALSE;
+    browser->load_finished_at = 0;
+    sync_load_progress(browser);
     if (g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_CANCELLED)
         || g_error_matches(error, WEBKIT_POLICY_ERROR, WEBKIT_POLICY_ERROR_FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE))
         return TRUE;
@@ -221,6 +237,8 @@ static gboolean quit_loop(gpointer data)
 static void web_process_failed(WebKitWebView *view, WebKitWebProcessTerminationReason reason, Browser *browser)
 {
     g_printerr("WebKit web process stopped (%d)\n", reason);
+    browser->loading = FALSE;
+    browser->load_finished_at = 0;
     if (browser->smoke) {
         browser->status = 1;
         g_main_loop_quit(browser->loop);
@@ -265,50 +283,65 @@ static void type_text(Browser *browser, const char *text)
     }
 }
 
-static gboolean pointing(Browser *browser)
+static gboolean position_pointer(Browser *browser, double dx, double dy)
 {
-    return browser->pointer_seen && g_get_monotonic_time() - browser->pointer_seen < POINTER_IDLE_US;
+    if (!browser->view)
+        return FALSE;
+    int width = wpe_view_get_width(browser->view);
+    int height = wpe_view_get_height(browser->view);
+    if (width <= 0 || height <= 0)
+        return FALSE;
+    if (browser->pointer_x < 0) {
+        browser->pointer_x = width / 2.0;
+        browser->pointer_y = height / 2.0;
+    }
+    browser->pointer_x = CLAMP(browser->pointer_x + dx, 0, width - 1);
+    browser->pointer_y = CLAMP(browser->pointer_y + dy, 0, height - 1);
+    char x[G_ASCII_DTOSTR_BUF_SIZE], y[G_ASCII_DTOSTR_BUF_SIZE];
+    overlay_call(browser, "setPointer(%s, %s)",
+        g_ascii_dtostr(x, sizeof(x), browser->pointer_x / width),
+        g_ascii_dtostr(y, sizeof(y), browser->pointer_y / height));
+    return TRUE;
 }
 
 static void move_pointer(Browser *browser, double dx, double dy)
 {
-    if (!browser->view)
+    double old_x = browser->pointer_x, old_y = browser->pointer_y;
+    if (!position_pointer(browser, dx, dy))
         return;
-    double width = MAX(1, wpe_view_get_width(browser->view));
-    double height = MAX(1, wpe_view_get_height(browser->view));
-    if (!pointing(browser) && !browser->pointer_x && !browser->pointer_y) {
-        browser->pointer_x = width / 2;
-        browser->pointer_y = height / 2;
-    }
-    double x = CLAMP(browser->pointer_x + dx, 0, width - 1);
-    double y = CLAMP(browser->pointer_y + dy, 0, height - 1);
+    double x = browser->pointer_x, y = browser->pointer_y;
     dispatch(browser, wpe_event_pointer_move_new(WPE_EVENT_POINTER_MOVE, browser->view, WPE_INPUT_SOURCE_MOUSE,
-        now_ms(), 0, x, y, x - browser->pointer_x, y - browser->pointer_y));
-    browser->pointer_x = x;
-    browser->pointer_y = y;
-    browser->pointer_seen = g_get_monotonic_time();
+        now_ms(), 0, x, y, old_x < 0 ? dx : x - old_x, old_y < 0 ? dy : y - old_y));
 }
 
 static void click(Browser *browser)
 {
-    if (!browser->view)
+    if (!position_pointer(browser, 0, 0))
         return;
     guint32 tick = now_ms();
     dispatch(browser, wpe_event_pointer_button_new(WPE_EVENT_POINTER_DOWN, browser->view, WPE_INPUT_SOURCE_MOUSE,
         tick, 0, 1, browser->pointer_x, browser->pointer_y, 1));
     dispatch(browser, wpe_event_pointer_button_new(WPE_EVENT_POINTER_UP, browser->view, WPE_INPUT_SOURCE_MOUSE,
         tick, WPE_MODIFIER_POINTER_BUTTON1, 1, browser->pointer_x, browser->pointer_y, 0));
-    browser->pointer_seen = g_get_monotonic_time();
 }
 
 static void scroll(Browser *browser, double dx, double dy, gboolean stop)
 {
     if (!browser->view)
         return;
-    double x = pointing(browser) ? browser->pointer_x : wpe_view_get_width(browser->view) / 2.0;
-    double y = pointing(browser) ? browser->pointer_y : wpe_view_get_height(browser->view) / 2.0;
+    double x = browser->pointer_x >= 0 ? browser->pointer_x : wpe_view_get_width(browser->view) / 2.0;
+    double y = browser->pointer_y >= 0 ? browser->pointer_y : wpe_view_get_height(browser->view) / 2.0;
     dispatch(browser, wpe_event_scroll_new(browser->view, WPE_INPUT_SOURCE_TOUCHPAD, now_ms(), 0,
         -dx / TOUCHPAD_SCALE, -dy / TOUCHPAD_SCALE, TRUE, stop, x, y));
+}
+
+static void scroll_stick(Browser *browser, double horizontal, double vertical, double seconds, double held_seconds)
+{
+    double dx = (horizontal > 0) - (horizontal < 0);
+    double dy = (vertical > 0) - (vertical < 0);
+    double speed = 480 + 1020 * MIN(1, held_seconds / SCROLL_RAMP_SECONDS);
+    double distance = speed * seconds / hypot(dx, dy);
+    scroll(browser, dx * distance, dy * distance, FALSE);
 }
 
 static void set_zoom(Browser *browser, double level)
@@ -365,22 +398,11 @@ static void press(Browser *browser, enum Button button)
         return;
     }
     switch (button) {
-    case BUTTON_UP: browser->pointer_seen = 0; key(browser, WPE_KEY_Up, KEY_UP, 0); break;
-    case BUTTON_DOWN: browser->pointer_seen = 0; key(browser, WPE_KEY_Down, KEY_DOWN, 0); break;
-    case BUTTON_LEFT: browser->pointer_seen = 0; key(browser, WPE_KEY_Left, KEY_LEFT, 0); break;
-    case BUTTON_RIGHT: browser->pointer_seen = 0; key(browser, WPE_KEY_Right, KEY_RIGHT, 0); break;
-    case BUTTON_A:
-        if (pointing(browser))
-            click(browser);
-        else if (browser->focus == FOCUS_TEXT)
-            overlay_call(browser, "openKeyboard()");
-        else if (browser->focus == FOCUS_FRAME && browser->frame_text)
-            overlay_call(browser, "openKeyboard(true)");
-        else if (browser->focus == FOCUS_TOGGLE)
-            key(browser, WPE_KEY_space, KEY_SPACE, 0);
-        else
-            key(browser, WPE_KEY_Return, KEY_ENTER, 0);
-        break;
+    case BUTTON_UP: move_pointer(browser, 0, -DPAD_POINTER_STEP); break;
+    case BUTTON_DOWN: move_pointer(browser, 0, DPAD_POINTER_STEP); break;
+    case BUTTON_LEFT: move_pointer(browser, -DPAD_POINTER_STEP, 0); break;
+    case BUTTON_RIGHT: move_pointer(browser, DPAD_POINTER_STEP, 0); break;
+    case BUTTON_A: click(browser); break;
     case BUTTON_B: go_back(browser); break;
     case BUTTON_X: open_address_screen(browser); break;
     case BUTTON_Y: webkit_web_view_reload(browser->web); break;
@@ -453,20 +475,21 @@ static gboolean tick(gpointer data)
     double lx = browser->stick[0], ly = browser->stick[1];
     double rx = browser->stick[2], ry = browser->stick[3];
     double left = hypot(lx, ly);
-    double right = hypot(rx, ry);
     if (left > 0 && !browser->keyboard) {
         double speed = 70 + 830 * pow(MIN(1, left), 2.2);
         move_pointer(browser, lx / left * speed * seconds, ly / left * speed * seconds);
         active = TRUE;
     }
-    if (right > 0 && !browser->keyboard) {
-        double speed = 90 + 1900 * pow(MIN(1, right), 2.2);
-        scroll(browser, rx / right * speed * seconds, ry / right * speed * seconds, FALSE);
-        browser->scrolling = TRUE;
+    if ((rx || ry) && !browser->keyboard) {
+        gint64 now = g_get_monotonic_time();
+        if (!browser->scroll_started_at)
+            browser->scroll_started_at = now;
+        double held_seconds = (now - browser->scroll_started_at) / (double)G_USEC_PER_SEC;
+        scroll_stick(browser, rx, ry, seconds, held_seconds);
         active = TRUE;
-    } else if (browser->scrolling) {
+    } else if (browser->scroll_started_at) {
         scroll(browser, 0, 0, TRUE);
-        browser->scrolling = FALSE;
+        browser->scroll_started_at = 0;
     }
     if (active)
         return G_SOURCE_CONTINUE;
@@ -605,17 +628,12 @@ static void script_message(WebKitUserContentManager *manager, JSCValue *value, B
     } else if (g_str_has_prefix(message, "keyboard:")) {
         browser->keyboard = message[strlen("keyboard:")] == '1';
         stop_repeat(browser);
-    } else if (g_str_has_prefix(message, "focus:")) {
-        const char *kind = message + strlen("focus:");
-        browser->focus = g_str_equal(kind, "text") ? FOCUS_TEXT : g_str_equal(kind, "toggle") ? FOCUS_TOGGLE
-            : g_str_equal(kind, "frame") ? FOCUS_FRAME : g_str_equal(kind, "other") ? FOCUS_OTHER : FOCUS_NONE;
-    } else if (g_str_has_prefix(message, "subfocus:")) {
-        const char *kind = message + strlen("subfocus:");
-        browser->frame_text = g_str_has_prefix(kind, "text");
-        if (browser->frame_text)
-            browser->focus = FOCUS_FRAME;
-        if (g_str_equal(kind, "text-click") && !browser->keyboard)
-            overlay_call(browser, "openKeyboard(true)");
+    } else if (g_str_equal(message, "pointer:ready") && !on_start(browser)) {
+        position_pointer(browser, 0, 0);
+    } else if (g_str_equal(message, "progress:ready")) {
+        sync_load_progress(browser);
+    } else if (g_str_equal(message, "frame:text-click") && !browser->keyboard) {
+        overlay_call(browser, "openKeyboard(true)");
     } else if (g_str_has_prefix(message, "type:") && browser->keyboard) {
         type_text(browser, message + strlen("type:"));
     } else if (g_str_equal(message, "erase") && browser->keyboard) {
@@ -628,8 +646,10 @@ static void script_message(WebKitUserContentManager *manager, JSCValue *value, B
 
 static void load_progress(WebKitWebView *view, GParamSpec *spec, Browser *browser)
 {
+    (void)view;
     (void)spec;
-    overlay_call(browser, "progress(%.3f)", webkit_web_view_get_estimated_load_progress(view));
+    if (browser->loading)
+        sync_load_progress(browser);
 }
 
 static gboolean keyboard_shortcut(WPEView *view, WPEEvent *event, Browser *browser)
@@ -670,51 +690,72 @@ static void sync_view(Browser *browser)
 
 static void load_changed(WebKitWebView *view, WebKitLoadEvent event, Browser *browser)
 {
-    (void)view;
     sync_view(browser);
-    if (event == WEBKIT_LOAD_COMMITTED) {
+    if (event == WEBKIT_LOAD_STARTED) {
+        browser->loading = TRUE;
+        browser->load_finished_at = 0;
+        overlay_call(browser, "progress(0)");
+    } else if (event == WEBKIT_LOAD_COMMITTED) {
         browser->keyboard = FALSE;
-        browser->focus = FOCUS_NONE;
-        browser->frame_text = FALSE;
         stop_repeat(browser);
     } else if (event == WEBKIT_LOAD_FINISHED) {
-        set_zoom(browser, webkit_web_view_get_zoom_level(browser->web));
+        if (browser->loading) {
+            browser->loading = FALSE;
+            browser->load_finished_at = g_get_monotonic_time();
+        }
+        sync_load_progress(browser);
+        set_zoom(browser, webkit_web_view_get_zoom_level(view));
         overlay_call(browser, "sync()");
+        if (!on_start(browser))
+            position_pointer(browser, 0, 0);
     }
 }
 
 static const char *const smoke_checks[] = {
     "document.title === 'Gizlet Browser' && gizlet.isOpen() && gizlet.keyCount() > 40 && document.activeElement.id === 'address'",
-    "location.pathname === '/first' && document.title === 'Browser smoke test'",
-    "document.activeElement && document.activeElement.id === 'one'",
-    "document.activeElement.id === 'two'",
-    "location.hash === '#b'",
-    "scrollY > 100",
-    "document.activeElement.id === 'q'",
-    "gizlet.isOpen()",
-    "document.getElementById('q').value === 'hi' && !gizlet.isOpen()",
-    "document.activeElement.tagName === 'IFRAME' && gizlet.isOpen()",
+    "location.pathname === '/first' && document.title === 'Browser smoke test' && "
+    "document.body.dataset.mobileUa === 'yes' && "
+    "navigator.userAgent.includes('(iPhone;') && navigator.userAgent.includes(' Mobile/') && "
+    "gizlet.pointerPosition() !== null",
+    "gizlet.pointerPosition()?.every((coordinate, index) => Math.abs(coordinate - [64, 44][index]) < 2)",
+    "location.hash === '#b' && gizlet.pointerPosition() !== null",
+    "scrollY === 0 && gizlet.pointerPosition()?.every((coordinate, index) => Math.abs(coordinate - [72, 52][index]) < 2)",
+    "scrollX === 400 && scrollY === 500 && "
+    "gizlet.pointerPosition()?.every((coordinate, index) => Math.abs(coordinate - [64, 44][index]) < 2)",
+    "scrollY > 580",
+    "Math.abs(scrollY - 500) < 12",
+    "scrollX > 480",
+    "Math.abs(scrollX - 400) < 12",
+    "gizlet.pointerPosition()?.every((coordinate, index) => Math.abs(coordinate - [100, 130][index]) < 2)",
+    "document.activeElement.id === 'q' && gizlet.isOpen() && gizlet.pointerPosition() === null",
+    "document.getElementById('q').value === 'hi' && !gizlet.isOpen() && gizlet.pointerPosition() !== null",
+    "document.activeElement.tagName === 'IFRAME' && gizlet.isOpen() && gizlet.pointerPosition() === null",
     "document.body.dataset.frame === 'ok'",
-    "!gizlet.isOpen()",
+    "!gizlet.isOpen() && gizlet.pointerPosition() !== null",
     "location.protocol === 'gizlet:' && gizlet.isOpen()",
+    "location.protocol === 'gizlet:' && gizlet.loadingProgress() >= 0 && gizlet.loadingProgress() < 100",
     "location.hostname === 'localhost' && location.pathname === '/second'",
-    "location.protocol === 'gizlet:' && gizlet.isOpen()",
-    "/ $/.test(document.getElementById('address').value) && (globalThis.unzoomed = gizlet.panelHeight()) > 100",
+    "location.protocol === 'gizlet:' && gizlet.isOpen() && gizlet.loadingProgress() === 100",
+    "gizlet.loadingProgress() === -1 && / $/.test(document.getElementById('address').value) && "
+    "(globalThis.unzoomed = gizlet.panelHeight()) > 100",
     "gizlet.isOpen() && Math.abs(gizlet.panelHeight() * 2 - unzoomed) < 3",
 };
 
 static const char *const smoke_names[] = {
-    "address screen and keyboard", "typed address", "D-pad focus", "D-pad focus moves", "A follows a link",
-    "right stick scrolls down", "page field focus", "A opens the keyboard", "keyboard types into the page",
+    "address screen and keyboard", "mobile page shows a pointer", "the pointer moves to a link", "A clicks the link",
+    "D-pad down and right move the pointer", "D-pad up and left move the pointer",
+    "right stick scrolls down", "right stick scrolls up by the same distance",
+    "right stick scrolls right", "right stick scrolls left by the same distance", "the pointer moves to a text field",
+    "clicking a text field shows the keyboard and hides the pointer", "typing and closing restores the pointer",
     "clicking a cross-origin frame field opens the keyboard", "keyboard types into the frame", "Select closes the keyboard",
-    "X opens the address screen", "second origin from the address screen", "B returns to the address screen",
-    "keyboard still owns the buttons after returning",
+    "X opens the address screen", "progress is visible while navigating", "second origin from the address screen",
+    "back to the address screen shows completed progress", "progress clears and the keyboard owns the buttons on return",
     "keyboard keeps its size at 200% zoom",
 };
 
 static gboolean smoke_navigates(guint step)
 {
-    return step == 0 || step == 1 || step == 12 || step == 13 || step == 14;
+    return step == 0 || step == 1 || step == 16 || step == 18 || step == 19;
 }
 
 static void smoke_result(GObject *source, GAsyncResult *result, gpointer data);
@@ -739,26 +780,36 @@ static void smoke_act(Browser *browser)
     case 1:
         overlay_call(browser, "type('http://127.0.0.1:%u/first'), gizlet.button('start')", browser->smoke_port);
         break;
-    case 2: case 3: press(browser, BUTTON_DOWN); break;
-    case 4: case 7: press(browser, BUTTON_A); break;
-    case 5: scroll(browser, 0, 400, FALSE); break;
-    case 6: overlay(browser, "document.getElementById('q').focus()"); break;
-    case 8: overlay_call(browser, "type('hi'), gizlet.button('select')"); break;
-    case 9:
-        browser->pointer_x = 100;
-        browser->pointer_y = 230;
-        move_pointer(browser, 0, 0);
-        click(browser);
+    case 2: move_pointer(browser, 64 - browser->pointer_x, 44 - browser->pointer_y); break;
+    case 3: case 11: press(browser, BUTTON_A); break;
+    case 4:
+        press(browser, BUTTON_DOWN);
+        press(browser, BUTTON_RIGHT);
         break;
-    case 10: overlay_call(browser, "type('ok')"); break;
-    case 11: overlay_call(browser, "button('select')"); break;
-    case 12: press(browser, BUTTON_X); break;
+    case 5:
+        press(browser, BUTTON_UP);
+        press(browser, BUTTON_LEFT);
+        overlay(browser, "scrollTo(400, 500)");
+        break;
+    case 6: scroll_stick(browser, 0, 0.45, 0.14, SCROLL_RAMP_SECONDS); break;
+    case 7: scroll_stick(browser, 0, -0.9, 0.14, SCROLL_RAMP_SECONDS); break;
+    case 8: scroll_stick(browser, 0.45, 0, 0.14, SCROLL_RAMP_SECONDS); break;
+    case 9: scroll_stick(browser, -0.9, 0, 0.14, SCROLL_RAMP_SECONDS); break;
+    case 10: move_pointer(browser, 100 - browser->pointer_x, 130 - browser->pointer_y); break;
+    case 12: overlay_call(browser, "type('hi'), gizlet.button('select')"); break;
     case 13:
+        move_pointer(browser, 100 - browser->pointer_x, 230 - browser->pointer_y);
+        press(browser, BUTTON_A);
+        break;
+    case 14: overlay_call(browser, "type('ok')"); break;
+    case 15: overlay_call(browser, "button('select')"); break;
+    case 16: press(browser, BUTTON_X); break;
+    case 17:
         overlay_call(browser, "type('http://localhost:%u/second'), gizlet.button('start')", browser->smoke_port);
         break;
-    case 14: press(browser, BUTTON_B); break;
-    case 15: press(browser, BUTTON_Y); break;
-    case 16: set_zoom(browser, 2.0); break;
+    case 19: press(browser, BUTTON_B); break;
+    case 20: press(browser, BUTTON_Y); break;
+    case 21: set_zoom(browser, 2.0); break;
     }
     if (!smoke_navigates(browser->smoke_step))
         browser->smoke_timer = g_timeout_add(600, smoke_delay, browser);
@@ -783,7 +834,7 @@ static void smoke_result(GObject *source, GAsyncResult *result, gpointer data)
     g_print("ok %u %s\n", browser->smoke_step, smoke_names[browser->smoke_step]);
     if (++browser->smoke_step == G_N_ELEMENTS(smoke_checks)) {
         browser->status = 0;
-        g_print("WebKit passed the keyboard, focus, pointer, frame, scrolling and navigation checks\n");
+        g_print("WebKit passed the keyboard, pointer, frame, scrolling and navigation progress checks\n");
         g_main_loop_quit(browser->loop);
         return;
     }
@@ -799,28 +850,43 @@ static void smoke_loaded(WebKitWebView *view, WebKitLoadEvent event, Browser *br
     }
 }
 
+static gboolean smoke_resume_response(gpointer data)
+{
+    Browser *browser = data;
+    g_autoptr(SoupServerMessage) message = g_steal_pointer(&browser->smoke_delayed_response);
+    browser->smoke_response_timer = 0;
+    soup_server_message_unpause(message);
+    return G_SOURCE_REMOVE;
+}
+
 static void smoke_response(SoupServer *server, SoupServerMessage *message, const char *path,
                            GHashTable *query, gpointer data)
 {
     (void)server;
     (void)query;
     Browser *browser = data;
+    const char *agent = soup_message_headers_get_one(soup_server_message_get_request_headers(message), "User-Agent");
     g_autofree char *page = g_str_equal(path, "/frame")
         ? g_strdup("<meta charset=utf-8><body style='margin:0'><input id=f aria-label=frame "
                    "style='box-sizing:border-box;width:100%;height:60px;margin:0'>"
                    "<script>f.addEventListener('input', () => parent.postMessage(f.value, '*'))</script>")
         : g_strdup_printf("<meta charset=utf-8><meta name=viewport content='width=device-width'>"
-                          "<title>Browser smoke test</title>"
-                          "<p><a id=one href='#a'>one</a></p><p><a id=two href='#b'>two</a></p>"
-                          "<p><input id=q aria-label=query></p>"
+                          "<title>Browser smoke test</title><body data-mobile-ua='%s'>"
+                          "<a href='#b' style='position:fixed;left:24px;top:24px;width:120px;height:40px'>Link</a>"
+                          "<input id=q aria-label=query style='position:fixed;left:40px;top:110px;height:40px'>"
                           "<iframe src='http://localhost:%u/frame' tabindex=-1 "
                           "style='position:fixed;left:0;top:200px;width:300px;height:60px;border:0'></iframe>"
-                          "<div style='height:4000px'></div>"
+                          "<div style='width:1800px;height:4000px'></div>"
                           "<script>addEventListener('message', event => { document.body.dataset.frame = event.data })</script>",
-                          browser->smoke_port);
+                          g_strcmp0(agent, MOBILE_USER_AGENT) == 0 ? "yes" : "no", browser->smoke_port);
     gsize length = strlen(page);
     soup_server_message_set_status(message, SOUP_STATUS_OK, NULL);
     soup_server_message_set_response(message, "text/html", SOUP_MEMORY_TAKE, g_steal_pointer(&page), length);
+    if (g_str_equal(path, "/second") && !browser->smoke_response_timer) {
+        soup_server_message_pause(message);
+        browser->smoke_delayed_response = g_object_ref(message);
+        browser->smoke_response_timer = g_timeout_add(2500, smoke_resume_response, browser);
+    }
 }
 
 static void configure(WebKitSettings *settings)
@@ -829,13 +895,9 @@ static void configure(WebKitSettings *settings)
     webkit_settings_set_enable_webrtc(settings, FALSE);
     webkit_settings_set_enable_webgl(settings, FALSE);
     webkit_settings_set_javascript_can_open_windows_automatically(settings, FALSE);
-    webkit_settings_set_enable_spatial_navigation(settings, TRUE);
+    webkit_settings_set_enable_spatial_navigation(settings, FALSE);
     webkit_settings_set_enable_page_cache(settings, TRUE);
-    const char *agent = webkit_settings_get_user_agent(settings);
-    if (agent && !strstr(agent, "Mobile")) {
-        g_autofree char *mobile = g_strconcat(agent, " Mobile GizletBrowser/0.2", NULL);
-        webkit_settings_set_user_agent(settings, mobile);
-    }
+    webkit_settings_set_user_agent(settings, MOBILE_USER_AGENT);
 }
 
 int browser_run(const char *page, const char *overlay_source, const char *address, int smoke)
@@ -871,7 +933,7 @@ int browser_run(const char *page, const char *overlay_source, const char *addres
         "network-session", session, "user-content-manager", content, NULL);
     g_autoptr(GPtrArray) pads = g_ptr_array_new_with_free_func(close_pad);
     g_autoptr(SoupServer) server = NULL;
-    Browser browser = { .loop = loop, .web = web, .page = page, .pads = pads, .smoke = smoke, .status = smoke,
+    Browser browser = { .loop = loop, .web = web, .page = page, .pads = pads, .smoke = smoke, .status = smoke, .pointer_x = -1,
         .chinese = chinese, .swap = g_strcmp0(g_getenv("GIZLET_SWAP_AB"), "1") == 0 };
     if (smoke) {
         server = soup_server_new(NULL, NULL);
@@ -910,6 +972,10 @@ int browser_run(const char *page, const char *overlay_source, const char *addres
             g_source_remove(sources[index]);
     g_clear_handle_id(&browser.tick, g_source_remove);
     g_clear_handle_id(&browser.smoke_timer, g_source_remove);
+    if (browser.smoke_response_timer) {
+        g_source_remove(browser.smoke_response_timer);
+        smoke_resume_response(&browser);
+    }
     stop_repeat(&browser);
     g_ptr_array_set_size(pads, 0);
     g_signal_handlers_disconnect_by_data(content, &browser);
