@@ -12,7 +12,7 @@ mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "$root/run"
 mount --bind /sys "$root/sys"
 mount -o remount,bind,ro,nosuid,nodev,noexec "$root/sys"
 
-for device in null zero random urandom full; do
+for device in null zero random urandom full tty; do
     touch "$root/dev/$device"
     mount --bind "/dev/$device" "$root/dev/$device"
 done
