@@ -1,15 +1,53 @@
 id = "io.gizlet.browser"
 name = "Browser"
-version = "0.1.1"
+version = "0.1.2"
 category = "app"
-description = "A web browser for handhelds, built on WPE WebKit."
+description = "Browse the web using the sticks and buttons on your Gizlet handheld. Point, scroll and type with a built-in keyboard."
+tags = ["web", "utilities", "gamepad"]
+color = "#0C3649"
 runtime = 1
+icon = "store/icon.png"
+cover = "store/cover.jpg"
 
 [names]
 zh-CN = "浏览器"
 
 [descriptions]
-zh-CN = "基于 WPE WebKit 的掌机浏览器。"
+zh-CN = "用 Gizlet 掌机的摇杆和按键浏览网页。移动光标、滚动页面，也能用内置键盘输入。"
+
+[about]
+en = "store/about.en.md"
+zh-CN = "store/about.zh-CN.md"
+
+[[controls]]
+button = "dpad"
+action = "Nudge the pointer"
+actions = { zh-CN = "微调光标" }
+
+[[controls]]
+button = "a"
+action = "Click"
+actions = { zh-CN = "点击" }
+
+[[controls]]
+button = "b"
+action = "Go back"
+actions = { zh-CN = "返回上一页" }
+
+[[controls]]
+button = "x"
+action = "Open the address screen"
+actions = { zh-CN = "打开地址输入页" }
+
+[[controls]]
+button = "y"
+action = "Reload the page"
+actions = { zh-CN = "刷新页面" }
+
+[[controls]]
+button = "start"
+action = "Go forward"
+actions = { zh-CN = "前进到下一页" }
 
 [[packages]]
 target = "aarch64-unknown-linux-gnu"
