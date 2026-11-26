@@ -50,7 +50,7 @@ app="$build_dir/app"
 mkdir -p "$app/bin" "$project/dist"
 install -m 0755 "$project/scripts/start.sh" "$app/bin/start"
 install -m 0755 "$project/scripts/session.sh" "$app/bin/session"
-install -m 0644 "$project/manifest.toml" "$app/manifest.toml"
+python3 "$project/scripts/manifest.py" "$project/gizlet.toml" "$app/manifest.json"
 mksquashfs "$runtime" "$app/runtime.sqfs" -comp zstd -noappend -no-progress
 "$app/bin/start" --smoke
 python3 "$project/scripts/pack.py" "$app" "$project/dist/io.gizlet.browser-0.1.0-arm64.gzl"

@@ -1,0 +1,17 @@
+id = "io.gizlet.browser"
+name = "Browser"
+version = "0.1.0"
+category = "app"
+description = "A web browser for handhelds, built on WPE WebKit."
+runtime = 1
+
+[names]
+zh-CN = "浏览器"
+
+[descriptions]
+zh-CN = "基于 WPE WebKit 的掌机浏览器。"
+
+[[packages]]
+target = "aarch64-unknown-linux-gnu"
+tier = "lite"
+entry = "bin/start"

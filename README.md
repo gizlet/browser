@@ -25,7 +25,7 @@ The keyboard has a row of `https://`, `www.`, `.com`, `.cn`, `/` and `:`, a symb
 
 ## Build and install
 
-On ARM64 Linux, install `mmdebstrap`, `squashfs-tools`, `debian-archive-keyring` and Python 3. Run `sudo ./scripts/package.sh` to build, run the headless smoke test, and write the `.gzl` under `dist/`. The build uses a dated Debian snapshot for WPE 2.54.3 and the application runtime.
+On ARM64 Linux, install `mmdebstrap`, `squashfs-tools`, `debian-archive-keyring` and Python 3.11 or newer. Run `sudo ./scripts/package.sh` to build, run the headless smoke test, and write the `.gzl` under `dist/`. The build uses a dated Debian snapshot for WPE 2.54.3 and the application runtime. It generates the package's `manifest.json` from [`gizlet.toml`](gizlet.toml), following the [Gizlet format](https://github.com/gizlet/gizlet/blob/main/docs/gizlet-toml.md).
 
 Copy the package to the device, then install it with `gizlet install /tmp/io.gizlet.browser-0.1.0-arm64.gzl`. Open Browser in the Launcher.
 
