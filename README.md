@@ -29,7 +29,7 @@ The keyboard has a row of `https://`, `www.`, `.com`, `.cn`, `/` and `:`, a symb
 
 On ARM64 Linux, install `mmdebstrap`, `squashfs-tools`, `debian-archive-keyring` and Python 3.11 or newer. Run `sudo ./scripts/package.sh` to build, run the headless smoke test, and write the `.gzl` under `dist/`. The build uses a dated Debian snapshot for WPE 2.54.3 and the application runtime. It generates the package's `manifest.json` from [`gizlet.toml`](gizlet.toml), following the [Gizlet format](https://github.com/gizlet/gizlet/blob/main/docs/gizlet-toml.md).
 
-Copy the package to the device, then install it with `gizlet install /tmp/io.gizlet.browser-0.1.0-aarch64-unknown-linux-gnu-lite.gzl`. Open Browser in the Launcher.
+Copy the package to the device, then install it with `gizlet install /tmp/io.gizlet.browser-0.1.1-aarch64-unknown-linux-gnu-lite.gzl`. Open Browser in the Launcher.
 
 The package carries its own read-only runtime with WPE, EGL/GBM and fonts. The entry mounts that runtime in a private mount namespace and starts the browser with an unprivileged UID. WebKit uses an ephemeral network session and Debian's bubblewrap sandbox. The address screen is bundled locally, and the shell denies permission requests. The first release has one tab, with media and WebRTC disabled.
 
