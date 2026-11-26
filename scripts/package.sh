@@ -11,7 +11,7 @@ trap 'rm -rf "$build_dir"' EXIT
 mirror=https://snapshot.debian.org/archive/debian/20261124T000000Z/
 engine=2.54.3-1
 runtime_packages="libwpewebkit-2.0-1=$engine,libevdev2,libegl1,libegl-mesa0,libgles2,libgl1-mesa-dri,libgbm1,mesa-libgallium,ca-certificates,glib-networking,fonts-dejavu-core,fonts-noto-cjk,bubblewrap,xdg-dbus-proxy,mount,util-linux"
-build_packages="libwpewebkit-2.0-dev=$engine,libevdev-dev,libc6-dev,gcc,rustc,pkgconf"
+build_packages="libwpewebkit-2.0-dev=$engine,libevdev-dev,libgbm-dev,libc6-dev,gcc,rustc,pkgconf"
 
 bootstrap() {
     mmdebstrap --mode=root --variant=minbase --architectures=arm64 \
