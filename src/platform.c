@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <wpe/drm/wpe-drm.h>
+#include <wpe/headless/wpe-headless.h>
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
 
@@ -27,6 +29,8 @@ typedef struct {
     gboolean swap;
     int status;
 } Browser;
+
+static void sync_view(Browser *browser);
 
 static gboolean on_start(Browser *browser)
 {
@@ -219,6 +223,8 @@ static void key(Browser *browser, guint symbol, guint scan, WPEModifiers modifie
 
 static void perform(Browser *browser, enum Action action)
 {
+    if (action != IGNORE)
+        sync_view(browser);
     switch (action) {
     case UP: key(browser, WPE_KEY_Up, KEY_UP, 0); break;
     case DOWN: key(browser, WPE_KEY_Down, KEY_DOWN, 0); break;
@@ -353,10 +359,11 @@ int browser_run(const char *page, const char *address, int smoke)
         g_printerr("Gizlet Browser must run as a non-root user\n");
         return 1;
     }
-    g_setenv("WPE_PLATFORM", smoke ? "headless" : "drm", TRUE);
-    WPEDisplay *display = wpe_display_get_default();
-    if (!display) {
-        g_printerr("WPE cannot open the %s display\n", smoke ? "headless" : "DRM");
+    g_autoptr(WPEDisplay) display = smoke ? wpe_display_headless_new() : wpe_display_drm_new();
+    g_autoptr(GError) display_error = NULL;
+    if (!wpe_display_connect(display, &display_error)) {
+        g_printerr("WPE cannot open the %s display: %s\n", smoke ? "headless" : "DRM",
+            display_error ? display_error->message : "unknown error");
         return 1;
     }
     g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
