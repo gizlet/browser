@@ -41,7 +41,7 @@
   .ring { position: absolute; border: 3px solid #f9e28b; border-radius: 6px; box-shadow: 0 0 0 2px rgba(20,14,32,.75), 0 2px 8px rgba(0,0,0,.35); transition: transform .12s cubic-bezier(.2,.8,.2,1), width .12s cubic-bezier(.2,.8,.2,1), height .12s cubic-bezier(.2,.8,.2,1); will-change: transform; }
   .cursor { position: absolute; left: 0; top: 0; width: 22px; height: 22px; will-change: transform; transition: opacity .3s ease-out; }
   .toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); padding: 7px 14px; border-radius: 16px; background: rgba(24,18,38,.92); box-shadow: 0 3px 10px rgba(0,0,0,.4); font-size: 15px; transition: opacity .25s ease-out; }
-  .kb { position: absolute; left: 0; right: 0; bottom: 0; padding: 7px 8px 6px; background: #1d1729; box-shadow: 0 -4px 16px rgba(0,0,0,.45); border-top: 1px solid #3c3052; }
+  .kb { position: absolute; left: 0; width: 100%; bottom: 0; transform-origin: 0 100%; padding: 7px 8px 6px; background: #1d1729; box-shadow: 0 -4px 16px rgba(0,0,0,.45); border-top: 1px solid #3c3052; }
   .preview { height: 30px; margin: 0 0 6px; padding: 5px 10px; border-radius: 7px; background: #110d19; border: 1px solid #5a4870; font-size: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
   .preview.placeholder { color: #a996c2; }
   .preview .caret { display: inline-block; width: 2px; height: 1.05em; margin: 0 -1px; vertical-align: -2px; background: #f9e28b; }
@@ -120,6 +120,16 @@
   let column = 0;
   let open = false;
   let remote = false;
+  let zoom = 1;
+
+  function setZoom(level) {
+    zoom = level > 0 ? level : 1;
+    panel.style.width = zoom * 100 + "%";
+    panel.style.transform = zoom === 1 ? "" : `scale(${1 / zoom})`;
+    toastBox.style.transform = `translateX(-50%) scale(${1 / zoom})`;
+    cursor.style.width = cursor.style.height = 22 / zoom + "px";
+    scheduleRing();
+  }
 
   function layout() {
     const layerRows = symbols ? symbolRows : letterRows;
@@ -278,7 +288,7 @@
 
   function reveal(element) {
     const rect = element.getBoundingClientRect();
-    const limit = innerHeight - panel.offsetHeight - 10;
+    const limit = innerHeight - panel.getBoundingClientRect().height - 10;
     if (rect.bottom > limit) scrollBy(0, rect.bottom - limit);
     else if (rect.top < 8) scrollBy(0, rect.top - 8);
   }
@@ -443,7 +453,8 @@
 
   Object.defineProperty(globalThis, "gizlet", {
     value: Object.freeze({
-      button, openKeyboard, progress, toast, sync,
+      button, openKeyboard, progress, toast, sync, setZoom,
+      panelHeight: () => panel.getBoundingClientRect().height,
       say: key => toast(text[key] || key),
       type: value => insert(value),
       isOpen: () => open,

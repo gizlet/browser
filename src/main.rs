@@ -33,10 +33,10 @@ const BTN_WEST: u16 = 0x134;
 extern "C" fn browser_button(code: u16, swap: bool) -> c_int {
     let (a, b) = if swap { (BTN_SOUTH, BTN_EAST) } else { (BTN_EAST, BTN_SOUTH) };
     let button = match code {
-        0x220 => Button::Up,
-        0x221 => Button::Down,
-        0x222 => Button::Left,
-        0x223 => Button::Right,
+        103 | 0x220 => Button::Up,
+        108 | 0x221 => Button::Down,
+        105 | 0x222 => Button::Left,
+        106 | 0x223 => Button::Right,
         code if code == a => Button::A,
         code if code == b => Button::B,
         BTN_NORTH => Button::X,

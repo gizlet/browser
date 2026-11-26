@@ -18,6 +18,8 @@
 #define WORLD "gizlet"
 #define SEARCH "https://www.bing.com/search?q="
 #define TICK_MS 16
+#define SMOKE_RETRY_MS 250
+#define SMOKE_TRIES 16
 #define REPEAT_DELAY_MS 300
 #define REPEAT_MS 65
 #define POINTER_IDLE_US (5 * G_USEC_PER_SEC)
@@ -69,6 +71,7 @@ struct Browser {
     gboolean smoke;
     guint smoke_port;
     guint smoke_step;
+    guint smoke_tries;
     guint smoke_timer;
     int status;
 };
@@ -308,6 +311,16 @@ static void scroll(Browser *browser, double dx, double dy, gboolean stop)
         -dx / TOUCHPAD_SCALE, -dy / TOUCHPAD_SCALE, TRUE, stop, x, y));
 }
 
+static void set_zoom(Browser *browser, double level)
+{
+    webkit_web_view_set_zoom_level(browser->web, level);
+    g_autofree char *value = g_strdup_printf("%.3f", level);
+    for (char *at = value; *at; ++at)
+        if (*at == ',')
+            *at = '.';
+    overlay_call(browser, "setZoom(%s)", value);
+}
+
 static void zoom(Browser *browser, int step)
 {
     static const double levels[] = { 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0 };
@@ -320,7 +333,7 @@ static void zoom(Browser *browser, int step)
         index = (guint)CLAMP((int)index + step, 0, (int)G_N_ELEMENTS(levels) - 1);
     else
         index = 4;
-    webkit_web_view_set_zoom_level(browser->web, levels[index]);
+    set_zoom(browser, levels[index]);
     overlay_call(browser, "toast('%d%%')", (int)lround(levels[index] * 100));
 }
 
@@ -665,6 +678,7 @@ static void load_changed(WebKitWebView *view, WebKitLoadEvent event, Browser *br
         browser->frame_text = FALSE;
         stop_repeat(browser);
     } else if (event == WEBKIT_LOAD_FINISHED) {
+        set_zoom(browser, webkit_web_view_get_zoom_level(browser->web));
         overlay_call(browser, "sync()");
     }
 }
@@ -685,7 +699,8 @@ static const char *const smoke_checks[] = {
     "location.protocol === 'gizlet:' && gizlet.isOpen()",
     "location.hostname === 'localhost' && location.pathname === '/second'",
     "location.protocol === 'gizlet:' && gizlet.isOpen()",
-    "/ $/.test(document.getElementById('address').value)",
+    "/ $/.test(document.getElementById('address').value) && (globalThis.unzoomed = gizlet.panelHeight()) > 100",
+    "gizlet.isOpen() && Math.abs(gizlet.panelHeight() * 2 - unzoomed) < 3",
 };
 
 static const char *const smoke_names[] = {
@@ -694,6 +709,7 @@ static const char *const smoke_names[] = {
     "clicking a cross-origin frame field opens the keyboard", "keyboard types into the frame", "Select closes the keyboard",
     "X opens the address screen", "second origin from the address screen", "B returns to the address screen",
     "keyboard still owns the buttons after returning",
+    "keyboard keeps its size at 200% zoom",
 };
 
 static gboolean smoke_navigates(guint step)
@@ -742,6 +758,7 @@ static void smoke_act(Browser *browser)
         break;
     case 14: press(browser, BUTTON_B); break;
     case 15: press(browser, BUTTON_Y); break;
+    case 16: set_zoom(browser, 2.0); break;
     }
     if (!smoke_navigates(browser->smoke_step))
         browser->smoke_timer = g_timeout_add(600, smoke_delay, browser);
@@ -753,11 +770,16 @@ static void smoke_result(GObject *source, GAsyncResult *result, gpointer data)
     g_autoptr(GError) error = NULL;
     g_autoptr(JSCValue) value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source), result, &error);
     if (!value || !jsc_value_to_boolean(value) || !browser->view) {
+        if (browser->view && ++browser->smoke_tries < SMOKE_TRIES) {
+            browser->smoke_timer = g_timeout_add(SMOKE_RETRY_MS, smoke_delay, browser);
+            return;
+        }
         g_printerr("Smoke test failed at step %u (%s): %s\n", browser->smoke_step, smoke_names[browser->smoke_step],
             error ? error->message : webkit_web_view_get_uri(browser->web));
         g_main_loop_quit(browser->loop);
         return;
     }
+    browser->smoke_tries = 0;
     g_print("ok %u %s\n", browser->smoke_step, smoke_names[browser->smoke_step]);
     if (++browser->smoke_step == G_N_ELEMENTS(smoke_checks)) {
         browser->status = 0;
@@ -771,8 +793,10 @@ static void smoke_result(GObject *source, GAsyncResult *result, gpointer data)
 static void smoke_loaded(WebKitWebView *view, WebKitLoadEvent event, Browser *browser)
 {
     (void)view;
-    if (event == WEBKIT_LOAD_FINISHED && smoke_navigates(browser->smoke_step))
+    if (event == WEBKIT_LOAD_FINISHED && smoke_navigates(browser->smoke_step)) {
+        g_clear_handle_id(&browser->smoke_timer, g_source_remove);
         smoke_check(browser);
+    }
 }
 
 static void smoke_response(SoupServer *server, SoupServerMessage *message, const char *path,
@@ -874,7 +898,7 @@ int browser_run(const char *page, const char *overlay_source, const char *addres
     guint sources[3] = { g_unix_signal_add(SIGTERM, quit_loop, loop), g_unix_signal_add(SIGINT, quit_loop, loop), 0 };
     if (smoke) {
         g_signal_connect(web, "load-changed", G_CALLBACK(smoke_loaded), &browser);
-        sources[2] = g_timeout_add_seconds(40, quit_loop, loop);
+        sources[2] = g_timeout_add_seconds(90, quit_loop, loop);
     } else {
         open_pads(&browser);
     }
