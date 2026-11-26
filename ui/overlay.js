@@ -8,10 +8,24 @@
     : { shift: "Shift", symbols: "#+=", letters: "abc", space: "Space", del: "Delete", go: "Go",
         hints: [["A", "Type"], ["B", "Delete"], ["Y", "Space"], ["X", "Symbols"], ["L/R", "Caret"], ["Start", "Go"], ["Select", "Close"]],
         empty: "Enter an address or search", invalid: "That address can't be opened" };
-  const start = location.protocol === "gizlet:";
   const post = message => {
     try { webkit.messageHandlers.gizlet.postMessage(message); } catch (error) { }
   };
+  const nonText = new Set(["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "image", "hidden"]);
+  const editable = element => !!element && (element.isContentEditable || element.tagName === "TEXTAREA"
+    || (element.tagName === "INPUT" && !nonText.has(element.type) && !element.readOnly && !element.disabled));
+  let lastPointer = 0;
+
+  if (window.top !== window) {
+    addEventListener("mousedown", () => { lastPointer = Date.now(); }, true);
+    addEventListener("focusin", event => {
+      post("subfocus:" + (editable(event.target) ? (Date.now() - lastPointer < 600 ? "text-click" : "text") : "none"));
+    }, true);
+    addEventListener("focusout", () => post("subfocus:none"), true);
+    return;
+  }
+
+  const start = location.protocol === "gizlet:";
 
   const css = `
   :host { all: initial; }
@@ -76,12 +90,10 @@
     if (host.isConnected) observer.disconnect();
   }).observe(document, { childList: true });
 
-  const nonText = new Set(["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "image", "hidden"]);
-  const editable = element => !!element && (element.isContentEditable || element.tagName === "TEXTAREA"
-    || (element.tagName === "INPUT" && !nonText.has(element.type) && !element.readOnly && !element.disabled));
   const focusKind = element => {
     if (!element || element === document.body || element === document.documentElement) return "none";
     if (editable(element)) return "text";
+    if (element.tagName === "IFRAME" || element.tagName === "FRAME") return "frame";
     if (element.tagName === "INPUT" && (element.type === "checkbox" || element.type === "radio")) return "toggle";
     return "other";
   };
@@ -101,6 +113,7 @@
   let row = 2;
   let column = 0;
   let open = false;
+  let remote = false;
 
   function layout() {
     const layerRows = symbols ? symbolRows : letterRows;
@@ -172,6 +185,7 @@
   }
 
   function insert(value) {
+    if (remote) return post("type:" + value);
     const element = focusTarget();
     if (!element) return;
     if (!document.execCommand("insertText", false, value) && typeof element.setRangeText === "function") {
@@ -182,6 +196,7 @@
   }
 
   function erase() {
+    if (remote) return post("erase");
     const element = focusTarget();
     if (!element) return;
     if (!document.execCommand("delete", false) && typeof element.setRangeText === "function") {
@@ -194,6 +209,7 @@
   }
 
   function caret(step) {
+    if (remote) return post("caret:" + step);
     const element = focusTarget();
     if (!element) return;
     try {
@@ -231,7 +247,8 @@
   }
 
   function update() {
-    if (start || !open) return;
+    preview.hidden = start || remote;
+    if (start || remote || !open) return;
     const element = target();
     if (!element) return;
     let value = element.isContentEditable ? element.innerText.replace(/\s+/g, " ") : element.value;
@@ -260,10 +277,11 @@
     else if (rect.top < 8) scrollBy(0, rect.top - 8);
   }
 
-  function openKeyboard() {
-    const element = target();
-    if (!element) return false;
-    if (!start) {
+  function openKeyboard(inFrame) {
+    remote = !!inFrame && !start;
+    const element = remote ? null : target();
+    if (!element && !remote) return false;
+    if (element && !start) {
       try {
         if (element.selectionStart === 0 && element.selectionEnd === 0 && element.value)
           element.setSelectionRange(element.value.length, element.value.length);
@@ -274,7 +292,7 @@
     ring.hidden = true;
     layout();
     update();
-    if (!start) reveal(element);
+    if (element && !start) reveal(element);
     post("keyboard:1");
     return true;
   }
@@ -285,6 +303,7 @@
       return;
     }
     open = false;
+    remote = false;
     panel.hidden = true;
     post("keyboard:0");
   }
@@ -329,7 +348,6 @@
   }
 
   let lastKey = 0;
-  let lastPointer = 0;
   let cursorTimer = 0;
   let ringFrame = 0;
   function placeRing() {
@@ -391,11 +409,16 @@
   addEventListener("focusout", () => {
     post("focus:none");
     setTimeout(() => {
-      if (!editable(document.activeElement) && open && !start) close();
+      if (!editable(document.activeElement) && open && !start && !remote) close();
       placeRing();
     }, 0);
   }, true);
   addEventListener("input", update, true);
+  const sync = () => {
+    post("keyboard:" + (open ? 1 : 0));
+    post("focus:" + focusKind(document.activeElement));
+  };
+  addEventListener("pageshow", event => { if (event.persisted) sync(); });
   addEventListener("scroll", scheduleRing, { capture: true, passive: true });
   addEventListener("resize", scheduleRing, { passive: true });
 
@@ -414,7 +437,7 @@
 
   Object.defineProperty(globalThis, "gizlet", {
     value: Object.freeze({
-      button, openKeyboard, progress, toast,
+      button, openKeyboard, progress, toast, sync,
       say: key => toast(text[key] || key),
       type: value => insert(value),
       isOpen: () => open,

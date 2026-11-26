@@ -33,7 +33,7 @@ static const char *const button_names[] = {
     NULL, "up", "down", "left", "right", "a", "b", "x", "y", "l1", "r1", "l2", "r2", "select", "start"
 };
 
-enum Focus { FOCUS_NONE, FOCUS_TEXT, FOCUS_TOGGLE, FOCUS_OTHER };
+enum Focus { FOCUS_NONE, FOCUS_TEXT, FOCUS_TOGGLE, FOCUS_FRAME, FOCUS_OTHER };
 
 extern int browser_button(uint16_t code, bool swap);
 
@@ -62,6 +62,7 @@ struct Browser {
     uint16_t repeat_code;
     enum Button repeat_button;
     enum Focus focus;
+    gboolean frame_text;
     gboolean keyboard;
     gboolean swap;
     gboolean chinese;
@@ -251,6 +252,16 @@ static void key(Browser *browser, guint symbol, guint scan, WPEModifiers modifie
         WPE_INPUT_SOURCE_KEYBOARD, tick, modifiers, scan + 8, symbol));
 }
 
+static void type_text(Browser *browser, const char *text)
+{
+    for (const char *at = text; *at; at = g_utf8_next_char(at)) {
+        gunichar character = g_utf8_get_char_validated(at, -1);
+        if (character == (gunichar)-1 || character == (gunichar)-2)
+            return;
+        key(browser, character < 0x100 ? character : 0x01000000 | character, 0, 0);
+    }
+}
+
 static gboolean pointing(Browser *browser)
 {
     return browser->pointer_seen && g_get_monotonic_time() - browser->pointer_seen < POINTER_IDLE_US;
@@ -350,6 +361,8 @@ static void press(Browser *browser, enum Button button)
             click(browser);
         else if (browser->focus == FOCUS_TEXT)
             overlay_call(browser, "openKeyboard()");
+        else if (browser->focus == FOCUS_FRAME && browser->frame_text)
+            overlay_call(browser, "openKeyboard(true)");
         else if (browser->focus == FOCUS_TOGGLE)
             key(browser, WPE_KEY_space, KEY_SPACE, 0);
         else
@@ -482,12 +495,21 @@ static void axis_event(Pad *pad, uint16_t code, int value)
         browser->tick = g_timeout_add(TICK_MS, tick, browser);
 }
 
+static void pad_lost(Pad *pad)
+{
+    Browser *browser = pad->browser;
+    pad->source = 0;
+    stop_repeat(browser);
+    memset(pad->hat, 0, sizeof(pad->hat));
+    memset(browser->stick, 0, sizeof(browser->stick));
+}
+
 static gboolean pad_ready(int fd, GIOCondition condition, gpointer data)
 {
     (void)fd;
     Pad *pad = data;
     if (condition & (G_IO_ERR | G_IO_HUP | G_IO_NVAL)) {
-        pad->source = 0;
+        pad_lost(pad);
         return G_SOURCE_REMOVE;
     }
     unsigned flags = LIBEVDEV_READ_FLAG_NORMAL;
@@ -502,7 +524,7 @@ static gboolean pad_ready(int fd, GIOCondition condition, gpointer data)
             axis_event(pad, event.code, event.value);
     }
     if (status != -EAGAIN) {
-        pad->source = 0;
+        pad_lost(pad);
         return G_SOURCE_REMOVE;
     }
     return G_SOURCE_CONTINUE;
@@ -573,7 +595,19 @@ static void script_message(WebKitUserContentManager *manager, JSCValue *value, B
     } else if (g_str_has_prefix(message, "focus:")) {
         const char *kind = message + strlen("focus:");
         browser->focus = g_str_equal(kind, "text") ? FOCUS_TEXT : g_str_equal(kind, "toggle") ? FOCUS_TOGGLE
-            : g_str_equal(kind, "other") ? FOCUS_OTHER : FOCUS_NONE;
+            : g_str_equal(kind, "frame") ? FOCUS_FRAME : g_str_equal(kind, "other") ? FOCUS_OTHER : FOCUS_NONE;
+    } else if (g_str_has_prefix(message, "subfocus:")) {
+        const char *kind = message + strlen("subfocus:");
+        browser->frame_text = g_str_has_prefix(kind, "text");
+        if (g_str_equal(kind, "text-click") && !browser->keyboard)
+            overlay_call(browser, "openKeyboard(true)");
+    } else if (g_str_has_prefix(message, "type:") && browser->keyboard) {
+        type_text(browser, message + strlen("type:"));
+    } else if (g_str_equal(message, "erase") && browser->keyboard) {
+        key(browser, WPE_KEY_BackSpace, KEY_BACKSPACE, 0);
+    } else if (g_str_has_prefix(message, "caret:") && browser->keyboard) {
+        gboolean back = message[strlen("caret:")] == '-';
+        key(browser, back ? WPE_KEY_Left : WPE_KEY_Right, back ? KEY_LEFT : KEY_RIGHT, 0);
     }
 }
 
@@ -626,7 +660,10 @@ static void load_changed(WebKitWebView *view, WebKitLoadEvent event, Browser *br
     if (event == WEBKIT_LOAD_COMMITTED) {
         browser->keyboard = FALSE;
         browser->focus = FOCUS_NONE;
+        browser->frame_text = FALSE;
         stop_repeat(browser);
+    } else if (event == WEBKIT_LOAD_FINISHED) {
+        overlay_call(browser, "sync()");
     }
 }
 
@@ -640,18 +677,26 @@ static const char *const smoke_checks[] = {
     "document.activeElement.id === 'q'",
     "gizlet.isOpen()",
     "document.getElementById('q').value === 'hi' && !gizlet.isOpen()",
+    "document.activeElement.tagName === 'IFRAME' && gizlet.isOpen()",
+    "document.body.dataset.frame === 'ok'",
+    "!gizlet.isOpen()",
+    "location.protocol === 'gizlet:' && gizlet.isOpen()",
     "location.hostname === 'localhost' && location.pathname === '/second'",
+    "location.protocol === 'gizlet:' && gizlet.isOpen()",
+    "/ $/.test(document.getElementById('address').value)",
 };
 
 static const char *const smoke_names[] = {
     "address screen and keyboard", "typed address", "D-pad focus", "D-pad focus moves", "A follows a link",
     "right stick scrolls down", "page field focus", "A opens the keyboard", "keyboard types into the page",
-    "second origin",
+    "clicking a cross-origin frame field opens the keyboard", "keyboard types into the frame", "Select closes the keyboard",
+    "X opens the address screen", "second origin from the address screen", "B returns to the address screen",
+    "keyboard still owns the buttons after returning",
 };
 
 static gboolean smoke_navigates(guint step)
 {
-    return step == 0 || step == 1 || step == 9;
+    return step == 0 || step == 1 || step == 12 || step == 13 || step == 14;
 }
 
 static void smoke_result(GObject *source, GAsyncResult *result, gpointer data);
@@ -681,11 +726,20 @@ static void smoke_act(Browser *browser)
     case 5: scroll(browser, 0, 400, FALSE); break;
     case 6: overlay(browser, "document.getElementById('q').focus()"); break;
     case 8: overlay_call(browser, "type('hi'), gizlet.button('select')"); break;
-    case 9: {
-        g_autofree char *uri = g_strdup_printf("http://localhost:%u/second", browser->smoke_port);
-        webkit_web_view_load_uri(browser->web, uri);
+    case 9:
+        browser->pointer_x = 100;
+        browser->pointer_y = 230;
+        move_pointer(browser, 0, 0);
+        click(browser);
         break;
-    }
+    case 10: overlay_call(browser, "type('ok')"); break;
+    case 11: overlay_call(browser, "button('select')"); break;
+    case 12: press(browser, BUTTON_X); break;
+    case 13:
+        overlay_call(browser, "type('http://localhost:%u/second'), gizlet.button('start')", browser->smoke_port);
+        break;
+    case 14: press(browser, BUTTON_B); break;
+    case 15: press(browser, BUTTON_Y); break;
     }
     if (!smoke_navigates(browser->smoke_step))
         browser->smoke_timer = g_timeout_add(600, smoke_delay, browser);
@@ -705,7 +759,7 @@ static void smoke_result(GObject *source, GAsyncResult *result, gpointer data)
     g_print("ok %u %s\n", browser->smoke_step, smoke_names[browser->smoke_step]);
     if (++browser->smoke_step == G_N_ELEMENTS(smoke_checks)) {
         browser->status = 0;
-        g_print("WebKit passed the address keyboard, focus, scrolling and navigation checks\n");
+        g_print("WebKit passed the keyboard, focus, pointer, frame, scrolling and navigation checks\n");
         g_main_loop_quit(browser->loop);
         return;
     }
@@ -723,15 +777,24 @@ static void smoke_response(SoupServer *server, SoupServerMessage *message, const
                            GHashTable *query, gpointer data)
 {
     (void)server;
-    (void)path;
     (void)query;
-    (void)data;
-    static const char page[] =
-        "<meta charset=utf-8><meta name=viewport content='width=device-width'><title>Browser smoke test</title>"
-        "<p><a id=one href='#a'>one</a></p><p><a id=two href='#b'>two</a></p>"
-        "<p><input id=q aria-label=query></p><div style='height:4000px'></div>";
+    Browser *browser = data;
+    g_autofree char *page = g_str_equal(path, "/frame")
+        ? g_strdup("<meta charset=utf-8><body style='margin:0'><input id=f aria-label=frame "
+                   "style='box-sizing:border-box;width:100%;height:60px;margin:0'>"
+                   "<script>f.addEventListener('input', () => parent.postMessage(f.value, '*'))</script>")
+        : g_strdup_printf("<meta charset=utf-8><meta name=viewport content='width=device-width'>"
+                          "<title>Browser smoke test</title>"
+                          "<p><a id=one href='#a'>one</a></p><p><a id=two href='#b'>two</a></p>"
+                          "<p><input id=q aria-label=query></p>"
+                          "<iframe src='http://localhost:%u/frame' tabindex=-1 "
+                          "style='position:fixed;left:0;top:200px;width:300px;height:60px;border:0'></iframe>"
+                          "<div style='height:4000px'></div>"
+                          "<script>addEventListener('message', event => { document.body.dataset.frame = event.data })</script>",
+                          browser->smoke_port);
+    gsize length = strlen(page);
     soup_server_message_set_status(message, SOUP_STATUS_OK, NULL);
-    soup_server_message_set_response(message, "text/html", SOUP_MEMORY_STATIC, page, sizeof(page) - 1);
+    soup_server_message_set_response(message, "text/html", SOUP_MEMORY_TAKE, g_steal_pointer(&page), length);
 }
 
 static void configure(WebKitSettings *settings)
@@ -773,7 +836,7 @@ int browser_run(const char *page, const char *overlay_source, const char *addres
     g_autoptr(WebKitUserContentManager) content = webkit_user_content_manager_new();
     g_autofree char *script_source = g_strconcat("globalThis.GIZLET_LANG = \"", chinese ? "zh-CN" : "en", "\";\n",
         overlay_source, NULL);
-    WebKitUserScript *script = webkit_user_script_new_for_world(script_source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+    WebKitUserScript *script = webkit_user_script_new_for_world(script_source, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
         WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, WORLD, NULL, NULL);
     webkit_user_content_manager_add_script(content, script);
     webkit_user_script_unref(script);
@@ -794,7 +857,7 @@ int browser_run(const char *page, const char *overlay_source, const char *addres
         GSList *uris = soup_server_get_uris(server);
         browser.smoke_port = g_uri_get_port(uris->data);
         g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
-        soup_server_add_handler(server, NULL, smoke_response, NULL, NULL);
+        soup_server_add_handler(server, NULL, smoke_response, &browser, NULL);
     }
     webkit_web_context_register_uri_scheme(context, "gizlet", serve_start, &browser, NULL);
     configure(webkit_web_view_get_settings(web));
