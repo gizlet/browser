@@ -599,6 +599,8 @@ static void script_message(WebKitUserContentManager *manager, JSCValue *value, B
     } else if (g_str_has_prefix(message, "subfocus:")) {
         const char *kind = message + strlen("subfocus:");
         browser->frame_text = g_str_has_prefix(kind, "text");
+        if (browser->frame_text)
+            browser->focus = FOCUS_FRAME;
         if (g_str_equal(kind, "text-click") && !browser->keyboard)
             overlay_call(browser, "openKeyboard(true)");
     } else if (g_str_has_prefix(message, "type:") && browser->keyboard) {

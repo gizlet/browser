@@ -15,11 +15,17 @@
   const editable = element => !!element && (element.isContentEditable || element.tagName === "TEXTAREA"
     || (element.tagName === "INPUT" && !nonText.has(element.type) && !element.readOnly && !element.disabled));
   let lastPointer = 0;
+  const deepActive = () => {
+    let element = document.activeElement;
+    while (element && element.shadowRoot && element.shadowRoot.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  };
+  const eventTarget = event => (event.composedPath && event.composedPath()[0]) || event.target;
 
   if (window.top !== window) {
     addEventListener("mousedown", () => { lastPointer = Date.now(); }, true);
     addEventListener("focusin", event => {
-      post("subfocus:" + (editable(event.target) ? (Date.now() - lastPointer < 600 ? "text-click" : "text") : "none"));
+      post("subfocus:" + (editable(eventTarget(event)) ? (Date.now() - lastPointer < 600 ? "text-click" : "text") : "none"));
     }, true);
     addEventListener("focusout", () => post("subfocus:none"), true);
     return;
@@ -99,7 +105,7 @@
   };
   const target = () => {
     if (start) return document.getElementById("address");
-    const element = document.activeElement;
+    const element = deepActive();
     return editable(element) ? element : null;
   };
 
@@ -180,7 +186,7 @@
 
   function focusTarget() {
     const element = target();
-    if (element && document.activeElement !== element) element.focus({ preventScroll: true });
+    if (element && deepActive() !== element) element.focus({ preventScroll: true });
     return element;
   }
 
@@ -352,7 +358,7 @@
   let ringFrame = 0;
   function placeRing() {
     ringFrame = 0;
-    const element = document.activeElement;
+    const element = deepActive();
     if (open || !element || element === document.body || element === document.documentElement || !cursor.hidden) {
       ring.hidden = true;
       return;
@@ -394,7 +400,7 @@
     cursorTimer = setTimeout(() => { cursor.style.opacity = "0"; cursorTimer = setTimeout(() => { cursor.hidden = true; }, 300); }, 4000);
   }, true);
   addEventListener("focusin", event => {
-    const element = event.target;
+    const element = eventTarget(event);
     const isEditable = editable(element);
     post("focus:" + focusKind(element));
     if (!start && isEditable && Date.now() - lastPointer < 600) {
@@ -409,14 +415,14 @@
   addEventListener("focusout", () => {
     post("focus:none");
     setTimeout(() => {
-      if (!editable(document.activeElement) && open && !start && !remote) close();
+      if (!editable(deepActive()) && open && !start && !remote) close();
       placeRing();
     }, 0);
   }, true);
   addEventListener("input", update, true);
   const sync = () => {
     post("keyboard:" + (open ? 1 : 0));
-    post("focus:" + focusKind(document.activeElement));
+    post("focus:" + focusKind(deepActive()));
   };
   addEventListener("pageshow", event => { if (event.persisted) sync(); });
   addEventListener("scroll", scheduleRing, { capture: true, passive: true });
