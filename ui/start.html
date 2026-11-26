@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'">
+<title>Gizlet Browser</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; color: #faf7ff; background: #181522; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100dvh; background: #211a32; }
+  main { max-width: 660px; padding: 27px 28px 14px; margin: auto; }
+  h1 { margin: 0 0 19px; font-size: 32px; font-weight: 700; letter-spacing: -.025em; }
+  form { margin: 0 0 11px; display: flex; gap: 8px; }
+  input, button { font: inherit; min-width: 0; border-radius: 7px; }
+  input { width: 100%; background: #13101d; color: inherit; border: 1px solid #79638c; padding: 9px 12px; font-size: 19px; }
+  input::placeholder { color: #c2afda; }
+  button { color: inherit; border: 1px solid #76618b; background: #362951; min-height: 41px; padding: 4px 5px; }
+  button:hover { background: #4a3969; }
+  :focus-visible { outline: 3px solid #f9e28b; outline-offset: 2px; }
+  #go { flex: 0 0 76px; background: #c9affc; border-color: #c9affc; color: #1c1129; font-weight: 700; }
+  #keys { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 6px; }
+  #keys button { font-size: 17px; }
+  #keys .wide { grid-column: span 2; }
+  footer { display: flex; flex-wrap: wrap; gap: 8px 17px; margin-top: 15px; color: #d8c8ed; font-size: 14px; }
+  kbd { font: inherit; font-weight: 700; color: #faf7ff; }
+  #message { min-height: 1.45em; margin: 0 0 7px; color: #ffd0be; font-size: 15px; }
+  @media (max-width: 520px) { main { padding-inline: 15px; } #keys { gap: 4px; } #keys button { font-size: 14px; } }
+</style>
+<main>
+  <h1>Gizlet Browser</h1>
+  <form id="address-form">
+    <input id="address" type="text" aria-label="Web address" placeholder="Web address" spellcheck="false" autocomplete="off" inputmode="url">
+    <button id="go" type="submit">Open</button>
+  </form>
+  <p id="message" role="status"></p>
+  <div id="keys" role="group" aria-label="On-screen keyboard"></div>
+  <footer><span><kbd>D-pad</kbd> Move</span><span><kbd>A</kbd> Select</span><span><kbd>B</kbd> Delete</span><span><kbd>FN</kbd> Hold to exit</span></footer>
+</main>
+<script>
+  const address = document.getElementById("address");
+  const keys = document.getElementById("keys");
+  const message = document.getElementById("message");
+  const go = document.getElementById("go");
+  const keyboards = [
+    [..."1234567890", ..."qwertyuiop", ..."asdfghjkl-", ..."zxcvbnm./:"],
+    [..."1234567890", ..."QWERTYUIOP", ..."ASDFGHJKL_", ..."ZXCVBNM?&="]
+  ];
+  let shifted = false;
+  let keyButtons;
+
+  function replaceSelection(text, deleting = false) {
+    const start = address.selectionStart;
+    const end = address.selectionEnd;
+    address.setRangeText(text, deleting && start === end ? Math.max(0, start - 1) : start, end, "end");
+    message.textContent = "";
+  }
+
+  function renderKeys() {
+    keys.replaceChildren();
+    const labels = keyboards[Number(shifted)];
+    for (const label of labels) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("click", () => replaceSelection(label));
+      keys.append(button);
+    }
+    const actions = [
+      ["Shift", () => { shifted = !shifted; renderKeys(); keyButtons[40].focus(); }],
+      ["Delete", () => replaceSelection("", true)],
+      ["Clear", () => { address.value = ""; message.textContent = ""; }],
+      ["Open", () => document.getElementById("address-form").requestSubmit()]
+    ];
+    for (const [label, run] of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "wide";
+      button.textContent = label;
+      button.addEventListener("click", run);
+      keys.append(button);
+    }
+    keyButtons = Array.from(keys.querySelectorAll("button"));
+  }
+
+  function showAddressError() {
+    message.textContent = "Enter a valid web address.";
+  }
+
+  document.getElementById("address-form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (address.value.trim()) location.href = "gizlet://open/?address=" + encodeURIComponent(address.value.trim());
+    else showAddressError();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+    const position = keyButtons.indexOf(document.activeElement);
+    if (event.key === "Backspace" && document.activeElement !== address) {
+      event.preventDefault();
+      replaceSelection("", true);
+      return;
+    }
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    if (position < 0) {
+      if (event.key === "ArrowDown") keyButtons[0].focus();
+      else return;
+    } else {
+      let next = position;
+      if (event.key === "ArrowLeft") next = Math.max(0, position - 1);
+      if (event.key === "ArrowRight") next = Math.min(keyButtons.length - 1, position + 1);
+      if (event.key === "ArrowUp") {
+        if (position < 10) (position < 8 ? address : go).focus();
+        else next = position >= 40 ? 30 + (position - 40) * 2 : position - 10;
+      }
+      if (event.key === "ArrowDown") next = position < 30 ? position + 10 : position < 40 ? 40 + Math.min(3, Math.floor((position - 30) / 2)) : position;
+      if (document.activeElement !== address && document.activeElement !== go) keyButtons[next].focus();
+    }
+    event.preventDefault();
+  });
+  renderKeys();
+  keyButtons[0].focus();
+</script>

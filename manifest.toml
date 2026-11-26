@@ -1,0 +1,9 @@
+id = "io.gizlet.browser"
+name = "Browser"
+version = "0.1.0"
+tier = "lite"
+target = "aarch64-unknown-linux-gnu"
+entry = "bin/start"
+
+[names]
+zh-CN = "浏览器"

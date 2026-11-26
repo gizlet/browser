@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths: [src/**, ui/**, scripts/**, manifest.toml, .github/workflows/ci.yml]
 
 permissions:
   contents: read
