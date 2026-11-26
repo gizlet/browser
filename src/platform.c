@@ -18,6 +18,8 @@
 #define WORLD "gizlet"
 #define SEARCH "https://www.bing.com/search?q="
 #define TICK_MS 16
+#define SMOKE_RETRY_MS 250
+#define SMOKE_TRIES 16
 #define REPEAT_DELAY_MS 300
 #define REPEAT_MS 65
 #define POINTER_IDLE_US (5 * G_USEC_PER_SEC)
@@ -69,6 +71,7 @@ struct Browser {
     gboolean smoke;
     guint smoke_port;
     guint smoke_step;
+    guint smoke_tries;
     guint smoke_timer;
     int status;
 };
@@ -767,11 +770,16 @@ static void smoke_result(GObject *source, GAsyncResult *result, gpointer data)
     g_autoptr(GError) error = NULL;
     g_autoptr(JSCValue) value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source), result, &error);
     if (!value || !jsc_value_to_boolean(value) || !browser->view) {
+        if (browser->view && ++browser->smoke_tries < SMOKE_TRIES) {
+            browser->smoke_timer = g_timeout_add(SMOKE_RETRY_MS, smoke_delay, browser);
+            return;
+        }
         g_printerr("Smoke test failed at step %u (%s): %s\n", browser->smoke_step, smoke_names[browser->smoke_step],
             error ? error->message : webkit_web_view_get_uri(browser->web));
         g_main_loop_quit(browser->loop);
         return;
     }
+    browser->smoke_tries = 0;
     g_print("ok %u %s\n", browser->smoke_step, smoke_names[browser->smoke_step]);
     if (++browser->smoke_step == G_N_ELEMENTS(smoke_checks)) {
         browser->status = 0;
@@ -785,8 +793,10 @@ static void smoke_result(GObject *source, GAsyncResult *result, gpointer data)
 static void smoke_loaded(WebKitWebView *view, WebKitLoadEvent event, Browser *browser)
 {
     (void)view;
-    if (event == WEBKIT_LOAD_FINISHED && smoke_navigates(browser->smoke_step))
+    if (event == WEBKIT_LOAD_FINISHED && smoke_navigates(browser->smoke_step)) {
+        g_clear_handle_id(&browser->smoke_timer, g_source_remove);
         smoke_check(browser);
+    }
 }
 
 static void smoke_response(SoupServer *server, SoupServerMessage *message, const char *path,
