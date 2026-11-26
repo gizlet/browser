@@ -1,0 +1,31 @@
+name: Codex review
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open pull request to review.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.issue.pull_request && contains(github.event.comment.body, '/codex-review'))
+    permissions:
+      checks: write
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: gizlet/.github/.github/workflows/codex-review.yml@latest
+    with:
+      pull_request_number: ${{ inputs.pull_request_number }}
+      review-instructions: Review handheld input, cross-process navigation, device isolation and ARM64 app packaging.
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
